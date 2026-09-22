@@ -50,6 +50,7 @@ test-trace-macros = { version = "0.3", path = "macros" }
 tracing-subscriber = { version = "0.3.17", default-features = false, optional = true, features = [
   "env-filter",
   "fmt",
+  "json",
 ] }
 env_logger = { version = "0.11", default-features = false, optional = true }
 

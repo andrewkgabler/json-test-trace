@@ -84,7 +84,11 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      #block
+      {
+        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+        #block
+        tracing::info!(test.name = stringify!(#sig.ident), "test.end");
+      }
     }
   };
   Ok(result)
@@ -228,11 +232,31 @@ fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
         }
       };
 
-      let _ = ::test_trace::tracing_subscriber::FmtSubscriber::builder()
-        .with_env_filter(#env_filter)
-        .with_span_events(__internal_event_filter)
-        .with_test_writer()
-        .try_init();
+      let __use_json = ::std::env::var_os("RUST_LOG_STYLE")
+        .map(|v| v.to_string_lossy() == "json")
+        .unwrap_or(false);
+
+      let __span_events = __internal_event_filter;
+
+      if __use_json {
+        let _ = (|| {
+          use ::test_trace::tracing_subscriber::prelude::*;
+          let filter = #env_filter;
+          let layer = ::test_trace::tracing_subscriber::fmt::layer()
+            .json()
+            .with_span_events(__span_events);
+          ::test_trace::tracing_subscriber::registry()
+            .with(filter)
+            .with(layer)
+            .try_init()
+            .map_err(|_| {});
+        })();
+      } else {
+        let _ = ::test_trace::tracing_subscriber::FmtSubscriber::builder()
+          .with_env_filter(#env_filter)
+          .with_span_events(__span_events)
+          .try_init();
+      }
     }
   }
 }
