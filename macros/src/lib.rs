@@ -86,8 +86,16 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       {
         tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+        struct __TestEndGuard {
+          test_name: &'static str,
+        }
+        impl Drop for __TestEndGuard {
+          fn drop(&mut self) {
+            tracing::info!(test.name = self.test_name, "test.end");
+          }
+        }
+        let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
         #block
-        tracing::info!(test.name = stringify!(#sig.ident), "test.end");
       }
     }
   };
