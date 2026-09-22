@@ -1,5 +1,5 @@
 [package]
-name = "test-trace"
+name = "json-test-trace"
 version = "0.3.0"
 authors = [
   "Luke Curley <kixelated@gmail.com>",
@@ -8,8 +8,8 @@ authors = [
 edition = "2021"
 rust-version = "1.71"
 license = "Apache-2.0 OR MIT"
-homepage = "https://github.com/kixelated/test-trace"
-repository = "https://github.com/kixelated/test-trace.git"
+homepage = "https://github.com/andrewkgabler/json-test-trace"
+repository = "https://github.com/andrewkgabler/json-test-trace.git"
 readme = "README.md"
 categories = [
   "development-tools::testing",
@@ -31,22 +31,22 @@ required-features = ["log", "unstable"]
 
 [features]
 default = ["trace", "color"]
-trace = ["dep:tracing-subscriber", "test-trace-macros/trace"]
+trace = ["dep:tracing-subscriber", "json-test-trace-macros/trace"]
 log = [
   "dep:env_logger",
-  "test-trace-macros/log",
+  "json-test-trace-macros/log",
   "tracing-subscriber?/tracing-log",
 ]
 color = ["env_logger?/auto-color", "tracing-subscriber?/ansi"]
 # Enable unstable features. These are generally exempt from any semantic
 # versioning guarantees.
-unstable = ["test-trace-macros/unstable"]
+unstable = ["json-test-trace-macros/unstable"]
 
 [workspace]
 members = ["macros"]
 
 [dependencies]
-test-trace-macros = { version = "0.3", path = "macros" }
+json-test-trace-macros = { version = "0.3", path = "macros" }
 tracing-subscriber = { version = "0.3.17", default-features = false, optional = true, features = [
   "env-filter",
   "fmt",

@@ -161,7 +161,7 @@ fn expand_logging_init(attribute_args: &AttributeArgs) -> Tokens {
   {
     quote! {
       let env_logger_builder = env_logger_builder
-        .parse_env(::test_trace::env_logger::Env::default().default_filter_or(#default_log_filter));
+        .parse_env(::json_test_trace::env_logger::Env::default().default_filter_or(#default_log_filter));
     }
   } else {
     quote! {}
@@ -169,7 +169,7 @@ fn expand_logging_init(attribute_args: &AttributeArgs) -> Tokens {
 
   quote! {
     {
-      let mut env_logger_builder = ::test_trace::env_logger::builder();
+      let mut env_logger_builder = ::json_test_trace::env_logger::builder();
       #add_default_log_filter
       let _ = env_logger_builder.is_test(true).try_init();
     }
@@ -186,7 +186,7 @@ fn expand_logging_init(_attribute_args: &AttributeArgs) -> Tokens {
 fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
   let env_filter = if let Some(default_log_filter) = &attribute_args.default_log_filter {
     quote! {
-      ::test_trace::tracing_subscriber::EnvFilter::builder()
+      ::json_test_trace::tracing_subscriber::EnvFilter::builder()
         .with_default_directive(
           #default_log_filter
             .parse()
@@ -196,9 +196,9 @@ fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
     }
   } else {
     quote! {
-    ::test_trace::tracing_subscriber::EnvFilter::builder()
+    ::json_test_trace::tracing_subscriber::EnvFilter::builder()
       .with_default_directive(
-        ::test_trace::tracing_subscriber::filter::LevelFilter::TRACE.into()
+        ::json_test_trace::tracing_subscriber::filter::LevelFilter::TRACE.into()
       ).from_env_lossy()
     }
   };
@@ -206,7 +206,7 @@ fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
   quote! {
     {
       let __internal_event_filter = {
-        use ::test_trace::tracing_subscriber::fmt::format::FmtSpan;
+        use ::json_test_trace::tracing_subscriber::fmt::format::FmtSpan;
 
         match ::std::env::var_os("RUST_LOG_SPAN_EVENTS") {
           Some(mut value) => {
@@ -240,19 +240,19 @@ fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
 
       if __use_json {
         let _ = (|| {
-          use ::test_trace::tracing_subscriber::prelude::*;
+          use ::json_test_trace::tracing_subscriber::prelude::*;
           let filter = #env_filter;
-          let layer = ::test_trace::tracing_subscriber::fmt::layer()
+          let layer = ::json_test_trace::tracing_subscriber::fmt::layer()
             .json()
             .with_span_events(__span_events);
-          ::test_trace::tracing_subscriber::registry()
+          ::json_test_trace::tracing_subscriber::registry()
             .with(filter)
             .with(layer)
             .try_init()
             .map_err(|_| {});
         })();
       } else {
-        let _ = ::test_trace::tracing_subscriber::FmtSubscriber::builder()
+        let _ = ::json_test_trace::tracing_subscriber::FmtSubscriber::builder()
           .with_env_filter(#env_filter)
           .with_span_events(__span_events)
           .try_init();
