@@ -58,19 +58,20 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      {
-        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
-        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.ignored");
-        struct __TestEndGuard {
-          test_name: &'static str,
-        }
-        impl Drop for __TestEndGuard {
-          fn drop(&mut self) {
-            tracing::info!(test.name = self.test_name, "test.end");
-          }
-        }
-        let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
+      let __test_span = tracing::info_span!("test", test.name = stringify!(#sig.ident));
+      let __test_span_guard = __test_span.enter();
+
+      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.ignored");
+      struct __TestEndGuard {
+        test_name: &'static str,
       }
+      impl Drop for __TestEndGuard {
+        fn drop(&mut self) {
+          tracing::info!(test.name = self.test_name, "test.end");
+        }
+      }
+      let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
     }
   };
   Ok(result)
@@ -116,16 +117,6 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
     #[#inner_test]
     #(#ignored_attrs)*
     #vis #sig {
-      // We put all initialization code into a separate module here in
-      // order to prevent potential ambiguities that could result in
-      // compilation errors. E.g., client code could use traits that
-      // could have methods that interfere with ones we use as part of
-      // initialization; with a `Foo` trait that is implemented for T
-      // and that contains a `map` (or similarly common named) method
-      // that could cause an ambiguity with `Iterator::map`, for
-      // example.
-      // The alternative would be to use fully qualified call syntax in
-      // all initialization code, but that's much harder to control.
       mod init {
         pub fn init() {
           #logging_init
@@ -135,19 +126,20 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      {
-        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
-        struct __TestEndGuard {
-          test_name: &'static str,
-        }
-        impl Drop for __TestEndGuard {
-          fn drop(&mut self) {
-            tracing::info!(test.name = self.test_name, "test.end");
-          }
-        }
-        let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
-        #block
+      let __test_span = tracing::info_span!("test", test.name = stringify!(#sig.ident));
+      let __test_span_guard = __test_span.enter();
+
+      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+      struct __TestEndGuard {
+        test_name: &'static str,
       }
+      impl Drop for __TestEndGuard {
+        fn drop(&mut self) {
+          tracing::info!(test.name = self.test_name, "test.end");
+        }
+      }
+      let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
+      #block
     }
   };
   Ok(result)
