@@ -61,6 +61,23 @@
 /// ```
 pub use json_test_trace_macros::test;
 
+/// A procedural macro for the `ignore` attribute.
+///
+/// Replaces `#[ignore]` with a test that emits a `test.ignored` event
+/// without running the test body. The test appears as passed in cargo
+/// test output but is reported as ignored in the JSON log.
+///
+/// # Example
+/// ```rust,no_run
+/// # mod fordoctest {
+/// #[json_test_trace::ignore]
+/// fn not_implemented_yet() {
+///   // body is never executed
+/// }
+/// # }
+/// ```
+pub use json_test_trace_macros::ignore;
+
 #[cfg(feature = "trace")]
 #[doc(hidden)]
 pub use tracing_subscriber;

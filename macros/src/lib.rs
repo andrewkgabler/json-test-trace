@@ -25,6 +25,57 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+#[proc_macro_attribute]
+pub fn ignore(_attr: TokenStream, item: TokenStream) -> TokenStream {
+  let item = parse_macro_input!(item as ItemFn);
+  try_ignore(item)
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
+fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
+  let ItemFn {
+    attrs,
+    vis,
+    sig,
+    block: _,
+  } = input;
+
+  let attribute_args = AttributeArgs::default();
+  let logging_init = expand_logging_init(&attribute_args);
+  let tracing_init = expand_tracing_init(&attribute_args);
+
+  let result = quote! {
+    #[::core::prelude::v1::test]
+    #(#attrs)*
+    #vis #sig {
+      mod init {
+        pub fn init() {
+          #logging_init
+          #tracing_init
+        }
+      }
+
+      init::init();
+
+      {
+        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+        tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.ignored");
+        struct __TestEndGuard {
+          test_name: &'static str,
+        }
+        impl Drop for __TestEndGuard {
+          fn drop(&mut self) {
+            tracing::info!(test.name = self.test_name, "test.end");
+          }
+        }
+        let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
+      }
+    }
+  };
+  Ok(result)
+}
+
 fn parse_attrs(attrs: Vec<Attribute>) -> syn::Result<(AttributeArgs, Vec<Attribute>)> {
   let mut attribute_args = AttributeArgs::default();
   if cfg!(feature = "unstable") {
