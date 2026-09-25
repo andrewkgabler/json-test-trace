@@ -44,6 +44,7 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
   let attribute_args = AttributeArgs::default();
   let logging_init = expand_logging_init(&attribute_args);
   let tracing_init = expand_tracing_init(&attribute_args);
+  let test_name = &sig.ident;
 
   let result = quote! {
     #[::core::prelude::v1::test]
@@ -58,20 +59,21 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      let __test_span = tracing::info_span!("test", test.name = stringify!(#sig.ident));
+      let __test_span = tracing::info_span!("test", test.name = stringify!(#test_name));
       let __test_span_guard = __test_span.enter();
 
-      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
-      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.ignored");
+      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.start");
+      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.ignored");
       struct __TestEndGuard {
         test_name: &'static str,
+        test_module: &'static str,
       }
       impl Drop for __TestEndGuard {
         fn drop(&mut self) {
-          tracing::info!(test.name = self.test_name, "test.end");
+          tracing::info!(test.name = self.test_name, test.module = self.test_module, "test.end");
         }
       }
-      let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
+      let _guard = __TestEndGuard { test_name: stringify!(#test_name), test_module: module_path!() };
     }
   };
   Ok(result)
@@ -112,6 +114,7 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
   let (attribute_args, ignored_attrs) = parse_attrs(attrs)?;
   let logging_init = expand_logging_init(&attribute_args);
   let tracing_init = expand_tracing_init(&attribute_args);
+  let test_name = &sig.ident;
 
   let result = quote! {
     #[#inner_test]
@@ -126,19 +129,20 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      let __test_span = tracing::info_span!("test", test.name = stringify!(#sig.ident));
+      let __test_span = tracing::info_span!("test", test.name = stringify!(#test_name));
       let __test_span_guard = __test_span.enter();
 
-      tracing::info!(test.name = stringify!(#sig.ident), test.module = module_path!(), "test.start");
+      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.start");
       struct __TestEndGuard {
         test_name: &'static str,
+        test_module: &'static str,
       }
       impl Drop for __TestEndGuard {
         fn drop(&mut self) {
-          tracing::info!(test.name = self.test_name, "test.end");
+          tracing::info!(test.name = self.test_name, test.module = self.test_module, "test.end");
         }
       }
-      let _guard = __TestEndGuard { test_name: stringify!(#sig.ident) };
+      let _guard = __TestEndGuard { test_name: stringify!(#test_name), test_module: module_path!() };
       #block
     }
   };
