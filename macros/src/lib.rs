@@ -45,6 +45,7 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
   let logging_init = expand_logging_init(&attribute_args);
   let tracing_init = expand_tracing_init(&attribute_args);
   let test_name = &sig.ident;
+  let test_name_str = test_name.to_string();
 
   let result = quote! {
     #[::core::prelude::v1::test]
@@ -59,21 +60,11 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      let __test_span = tracing::info_span!("test", test.name = stringify!(#test_name));
-      let __test_span_guard = __test_span.enter();
-
-      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.start");
-      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.ignored");
-      struct __TestEndGuard {
-        test_name: &'static str,
-        test_module: &'static str,
-      }
-      impl Drop for __TestEndGuard {
-        fn drop(&mut self) {
-          tracing::info!(test.name = self.test_name, test.module = self.test_module, "test.end");
-        }
-      }
-      let _guard = __TestEndGuard { test_name: stringify!(#test_name), test_module: module_path!() };
+      let __guard = ::json_test_trace::init_test(#test_name_str, module_path!());
+      
+      tracing::info!(test.name = #test_name_str, test.module = module_path!(), "test.ignored");
+      
+      drop(__guard);
     }
   };
   Ok(result)
@@ -115,6 +106,7 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
   let logging_init = expand_logging_init(&attribute_args);
   let tracing_init = expand_tracing_init(&attribute_args);
   let test_name = &sig.ident;
+  let test_name_str = test_name.to_string();
 
   let result = quote! {
     #[#inner_test]
@@ -129,21 +121,15 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      let __test_span = tracing::info_span!("test", test.name = stringify!(#test_name));
-      let __test_span_guard = __test_span.enter();
+      let __guard = ::json_test_trace::init_test(#test_name_str, module_path!());
+      
+      let __result = {
+        #block
+      };
 
-      tracing::info!(test.name = stringify!(#test_name), test.module = module_path!(), "test.start");
-      struct __TestEndGuard {
-        test_name: &'static str,
-        test_module: &'static str,
-      }
-      impl Drop for __TestEndGuard {
-        fn drop(&mut self) {
-          tracing::info!(test.name = self.test_name, test.module = self.test_module, "test.end");
-        }
-      }
-      let _guard = __TestEndGuard { test_name: stringify!(#test_name), test_module: module_path!() };
-      #block
+      drop(__guard);
+
+      __result
     }
   };
   Ok(result)
@@ -238,81 +224,10 @@ fn expand_logging_init(_attribute_args: &AttributeArgs) -> Tokens {
 
 /// Expand the initialization code for the `tracing` crate.
 #[cfg(feature = "trace")]
-fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
-  let env_filter = if let Some(default_log_filter) = &attribute_args.default_log_filter {
-    quote! {
-      ::json_test_trace::tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(
-          #default_log_filter
-            .parse()
-            .expect("test-trace: default_log_filter must be valid")
-        )
-        .from_env_lossy()
-    }
-  } else {
-    quote! {
-    ::json_test_trace::tracing_subscriber::EnvFilter::builder()
-      .with_default_directive(
-        ::json_test_trace::tracing_subscriber::filter::LevelFilter::TRACE.into()
-      ).from_env_lossy()
-    }
-  };
-
+fn expand_tracing_init(_attribute_args: &AttributeArgs) -> Tokens {
   quote! {
-    {
-      let __internal_event_filter = {
-        use ::json_test_trace::tracing_subscriber::fmt::format::FmtSpan;
-
-        match ::std::env::var_os("RUST_LOG_SPAN_EVENTS") {
-          Some(mut value) => {
-            value.make_ascii_lowercase();
-            let value = value.to_str().expect("test-trace: RUST_LOG_SPAN_EVENTS must be valid UTF-8");
-            value
-              .split(",")
-              .map(|filter| match filter.trim() {
-                "new" => FmtSpan::NEW,
-                "enter" => FmtSpan::ENTER,
-                "exit" => FmtSpan::EXIT,
-                "close" => FmtSpan::CLOSE,
-                "active" => FmtSpan::ACTIVE,
-                "full" => FmtSpan::FULL,
-                _ => panic!("test-trace: RUST_LOG_SPAN_EVENTS must contain filters separated by `,`.\n\t\
-                  For example: `active` or `new,close`\n\t\
-                  Supported filters: new, enter, exit, close, active, full\n\t\
-                  Got: {}", value),
-              })
-              .fold(FmtSpan::NONE, |acc, filter| filter | acc)
-          },
-          None => FmtSpan::NONE,
-        }
-      };
-
-      let __use_json = ::std::env::var_os("RUST_LOG_STYLE")
-        .map(|v| v.to_string_lossy() == "json")
-        .unwrap_or(false);
-
-      let __span_events = __internal_event_filter;
-
-      if __use_json {
-        let _ = (|| {
-          use ::json_test_trace::tracing_subscriber::prelude::*;
-          let filter = #env_filter;
-          let layer = ::json_test_trace::tracing_subscriber::fmt::layer()
-            .json()
-            .with_span_events(__span_events);
-          ::json_test_trace::tracing_subscriber::registry()
-            .with(filter)
-            .with(layer)
-            .try_init()
-            .map_err(|_| {});
-        })();
-      } else {
-        let _ = ::json_test_trace::tracing_subscriber::FmtSubscriber::builder()
-          .with_env_filter(#env_filter)
-          .with_span_events(__span_events)
-          .try_init();
-      }
-    }
+    // Global subscriber is already initialized by init_global_test_logging()
+    // No per-test subscriber setup needed
   }
 }
 

@@ -6,6 +6,18 @@
 //! A crate providing a replacement #[[macro@test]] attribute that
 //! initializes logging and/or tracing infrastructure before running
 //! tests.
+//!
+//! When the `trace` feature is enabled, test output is written to a
+//! JSONL file (path from `TEST_LOG_FILE` env var, default:
+//! `/tmp/{crate_name}-tracing.jsonl`). Each test's events are
+//! accumulated in a per-test buffer and flushed atomically as a
+//! contiguous block on test completion (normal exit or panic).
+
+#[cfg(feature = "trace")]
+mod subscriber;
+
+#[cfg(feature = "trace")]
+pub use subscriber::{init_global_test_logging, init_test, TestGuard};
 
 /// A procedural macro for the `test` attribute.
 ///

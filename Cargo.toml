@@ -31,7 +31,14 @@ required-features = ["log", "unstable"]
 
 [features]
 default = ["trace", "color"]
-trace = ["dep:tracing-subscriber", "json-test-trace-macros/trace"]
+trace = [
+  "dep:tracing-subscriber",
+  "dep:tracing",
+  "dep:ctor",
+  "dep:dtor",
+  "dep:serde_json",
+  "json-test-trace-macros/trace",
+]
 log = [
   "dep:env_logger",
   "json-test-trace-macros/log",
@@ -52,7 +59,11 @@ tracing-subscriber = { version = "0.3.17", default-features = false, optional = 
   "fmt",
   "json",
 ] }
+tracing = { version = "0.1.20", optional = true }
 env_logger = { version = "0.11", default-features = false, optional = true }
+ctor = { version = "0.2", optional = true }
+dtor = { version = "0.2", optional = true }
+serde_json = { version = "1.0", optional = true }
 
 [dev-dependencies]
 logging = { version = "0.4.8", package = "log" }
