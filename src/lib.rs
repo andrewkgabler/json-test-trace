@@ -94,6 +94,9 @@ pub use json_test_trace_macros::ignore;
 #[doc(hidden)]
 pub use tracing_subscriber;
 
+#[cfg(feature = "trace")]
+pub use tracing;
+
 #[cfg(feature = "log")]
 #[doc(hidden)]
 pub use env_logger;

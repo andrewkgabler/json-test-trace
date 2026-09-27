@@ -124,7 +124,8 @@ where
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        // Extract test name from span context
+        // Extract test name from event fields.
+        // The macro stamps test.name onto the test span, so all child events inherit it.
         let test_name = extract_test_name(event);
         
         if let Some(name) = test_name {
