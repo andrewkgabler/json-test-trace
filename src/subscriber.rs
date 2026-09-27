@@ -49,6 +49,13 @@ impl TestLogState {
 /// Global subscriber state (initialized once per process).
 static STATE: OnceLock<TestLogState> = OnceLock::new();
 
+/// Clear the current test name in global state.
+fn clear_current_test(state: &TestLogState) {
+    if let Ok(mut current) = state.current_test.lock() {
+        *current = None;
+    }
+}
+
 /// Initialize the global test logging subscriber.
 ///
 /// Reads `TEST_LOG_FILE` from environment, creates/truncates the file,
@@ -152,17 +159,15 @@ where
         }
     }
 
-    fn on_close(
+fn on_close(
         &self,
         _id: tracing::span::Id,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Clear current test name on span close.
-        // Do NOT flush here \u2014 TestGuard::drop() handles flushing.
+        // Do NOT flush here — TestGuard::drop() handles flushing.
         if let Some(state) = STATE.get() {
-            if let Ok(mut current) = state.current_test.lock() {
-                *current = None;
-            }
+            clear_current_test(state);
         }
     }
 }
@@ -350,10 +355,7 @@ impl TestGuard {
                     }
                 }
             }
-            // Clear current test
-            if let Ok(mut current) = state.current_test.lock() {
-                *current = None;
-            }
+            clear_current_test(state);
         }
     }
 }
