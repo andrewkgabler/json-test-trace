@@ -14,6 +14,8 @@ use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
+use serde_json::{self, Value};
+
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -170,7 +172,7 @@ struct EventVisitor {
     timestamp: u64,
     level: String,
     target: String,
-    fields: HashMap<String, String>,
+    fields: HashMap<String, Value>,
 }
 
 impl EventVisitor {
@@ -181,6 +183,27 @@ impl EventVisitor {
             target: "unknown".to_string(),
             fields: HashMap::new(),
         }
+    }
+
+    fn parse_value(s: &str) -> Value {
+        // Try to parse as number
+        if let Ok(n) = s.parse::<i64>() {
+            return Value::Number(n.into());
+        }
+        if let Ok(n) = s.parse::<f64>() {
+            if let Some(num) = serde_json::Number::from_f64(n) {
+                return Value::Number(num);
+            }
+        }
+        // Try to parse as bool
+        match s {
+            "true" => return Value::Bool(true),
+            "false" => return Value::Bool(false),
+            "null" => return Value::Null,
+            _ => {}
+        }
+        // Fallback to string
+        Value::String(s.to_string())
     }
 }
 
@@ -195,7 +218,7 @@ impl tracing::field::Visit for EventVisitor {
             "level" => self.level = value.to_string(),
             "target" => self.target = value.to_string(),
             _ => {
-                self.fields.insert(field.name().to_string(), value.to_string());
+                self.fields.insert(field.name().to_string(), Self::parse_value(value));
             }
         }
     }
@@ -203,14 +226,14 @@ impl tracing::field::Visit for EventVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
         match field.name() {
             "timestamp" => {
-                // Try to parse debug output as nanoseconds
                 let debug_str = format!("{:?}", value);
                 if let Ok(ns) = debug_str.parse::<u64>() {
                     self.timestamp = ns;
                 }
             }
             _ => {
-                self.fields.insert(field.name().to_string(), format!("{:?}", value));
+                let debug_str = format!("{:?}", value);
+                self.fields.insert(field.name().to_string(), Self::parse_value(&debug_str));
             }
         }
     }
@@ -234,35 +257,19 @@ fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
     let target = visitor.target;
     let fields = visitor.fields;
     
-    // Build JSON manually
-    let mut json = String::new();
-    json.push_str(&format!(
-        r#"{{"timestamp":{},"level":"{}","fields":{{"#,
-        timestamp, level
+    // Build JSON object using serde_json::Value
+    let mut map = serde_json::Map::new();
+    map.insert("timestamp".to_string(), Value::Number(
+        serde_json::Number::from(timestamp)
     ));
-    
-    let mut first = true;
-    for (key, value) in &fields {
-        if !first {
-            json.push(',');
-        }
-        let value_json = match serde_json::to_string(value) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("json-test-trace: failed to serialize field {}: {}", key, e);
-                serde_json::to_string(&format!("[ERROR: {}]", e)).unwrap_or_else(|_| "null".to_string())
-            }
-        };
-        json.push_str(&format!(r#""{}":{}"#, key, value_json));
-        first = false;
-    }
-    
-    json.push_str(&format!(
-        r#"}},"target":"{}"}}}}"#,
-        target
+    map.insert("level".to_string(), Value::String(level));
+    map.insert("fields".to_string(), Value::Object(
+        fields.into_iter().collect()
     ));
+    map.insert("target".to_string(), Value::String(target));
     
-    Some(json)
+    let value = Value::Object(map);
+    serde_json::to_string(&value).ok()
 }
 
 /// Visitor to extract test.name field.
