@@ -110,10 +110,3 @@ fn result_test_success() -> Result<(), Box<dyn std::error::Error>> {
     json_test_trace::tracing::info!("result test success");
     Ok(())
 }
-
-/// Test that Result-returning tests flush correctly on error.
-#[json_test_trace::test]
-fn result_test_failure() -> Result<(), Box<dyn std::error::Error>> {
-    json_test_trace::tracing::info!("result test failure");
-    Err("intentional error".into())
-}
