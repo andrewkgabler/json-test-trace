@@ -47,7 +47,12 @@ impl TestLogState {
 }
 
 /// Global subscriber state (initialized once per process).
-static STATE: OnceLock<TestLogState> = OnceLock::new();
+pub static STATE: OnceLock<TestLogState> = OnceLock::new();
+
+/// Get the log file path from the global state, if initialized.
+pub fn get_log_file_path() -> Option<String> {
+    STATE.get().map(|s| s.log_file_path.clone())
+}
 
 /// Clear the current test name in global state.
 fn clear_current_test(state: &TestLogState) {
@@ -124,9 +129,14 @@ where
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        // Extract test name from event fields.
-        // The macro stamps test.name onto the test span, so all child events inherit it.
-        let test_name = extract_test_name(event);
+        // Use current_test set by on_new_span when the test span was created.
+        // The test span has test.name field; child events inherit the span context.
+        let test_name = if let Some(state) = STATE.get() {
+            let current = state.current_test.lock().ok();
+            current.and_then(|c| c.clone())
+        } else {
+            None
+        };
         
         if let Some(name) = test_name {
             // Serialize event to JSON
@@ -152,6 +162,7 @@ where
     ) {
         // Track test name from span fields
         if let Some(test_name) = extract_test_name_from_span(attrs) {
+            eprintln!("json-test-trace: on_new_span test.name={}", test_name);
             if let Some(state) = STATE.get() {
                 if let Ok(mut current) = state.current_test.lock() {
                     *current = Some(test_name);
@@ -351,7 +362,39 @@ impl TestGuard {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 if let Some(buffer) = buffers.remove(&self.test_name) {
                     if let Ok(mut file) = state.file.lock() {
+                        // Emit synthetic test.start record
+                        let start_ts = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
+                        let start_record = format!(
+                            r#"{{"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            self.test_name,
+                            self.test_module,
+                            self.test_module,
+                            start_ts
+                        );
+                        let _ = file.write_all(start_record.as_bytes());
+                        let _ = file.write_all(b"\n");
+                        
+                        // Write buffered events
                         let _ = file.write_all(&buffer);
+                        
+                        // Emit synthetic test.end record
+                        let end_ts = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos();
+                        let end_record = format!(
+                            r#"{{"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            self.test_name,
+                            self.test_module,
+                            self.test_module,
+                            end_ts
+                        );
+                        let _ = file.write_all(end_record.as_bytes());
+                        let _ = file.write_all(b"\n");
+                        
                         let _ = file.flush();
                     }
                 }
