@@ -24,13 +24,19 @@ tracing infrastructure before running tests.
 """
 include = ["src/lib.rs", "LICENSE-*", "README.md", "CHANGELOG.md"]
 
+[[bin]]
+name = "json-test-trace"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [[test]]
 name = "default_log_filter"
 path = "tests/default_log_filter.rs"
 required-features = ["log", "unstable"]
 
 [features]
-default = ["trace", "color"]
+default = ["trace", "color", "cli"]
+cli = ["dep:clap", "dep:serde", "dep:chrono"]
 trace = [
   "dep:tracing-subscriber",
   "dep:tracing",
@@ -64,6 +70,9 @@ env_logger = { version = "0.11", default-features = false, optional = true }
 ctor = { version = "0.2", optional = true }
 dtor = { version = "0.2", optional = true }
 serde_json = { version = "1.0", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
 
 [dev-dependencies]
 logging = { version = "0.4.8", package = "log" }
@@ -77,7 +86,7 @@ tracing = { version = "0.1.20" }
 tempfile = "3"
 
 # error: cannot find macro `__lazy_static_internal` in this scope
-#   --> ~/.cargo/registry/src/github.com-1ecc6299db9ec823/sharded-slab-0.1.4/src/tid.rs:33:1
+#   --> ~/.cargo/registry/src/github.com/1ecc6299db9ec823/sharded-slab-0.1.4/src/tid.rs:33:1
 #    |
 # 33 | / lazy_static! {
 # 34 | |     static ref REGISTRY: Registry = Registry {
@@ -87,7 +96,7 @@ tempfile = "3"
 # 38 | | }
 #    | |_^
 #    |
-#    = note: this error originates in the macro `lazy_static` (in Nightly builds, run with -Z macro-backtrace for more info)
+#    = note: this error originates in the macro `lazy_static` (in Nightly builds, run -Z macro-backtrace for more info)
 #
 # Probably fixed by https://github.com/rust-lang-nursery/lazy-static.rs/pull/107.
 _lazy_static_unused = { package = "lazy_static", version = "1.0.2" }
