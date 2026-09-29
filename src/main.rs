@@ -9,7 +9,6 @@ use std::path::PathBuf;
 enum OutputFormat {
     Json,
     Pretty,
-    Instructions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -166,7 +165,6 @@ fn run_query(
     match format {
         OutputFormat::Json => print_json(&results),
         OutputFormat::Pretty => print_pretty(&results),
-        OutputFormat::Instructions => print_instructions(&results),
     }
 }
 
