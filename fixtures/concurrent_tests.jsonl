@@ -1,0 +1,9 @@
+{"event":"test.start","name":"test_alpha","module":"allograph::auth::claims","status":"pass","error":null,"fields":{"test.name":"test_alpha","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"test_alpha","timestamp":1790655283344757000}
+{"event":"test.start","name":"test_beta","module":"allograph::auth::claims","status":"fail","error":"AllographDbQuery","fields":{"test.name":"test_beta","test.module":"allograph::auth::claims","status":"fail"},"level":"INFO","target":"test_beta","timestamp":1790655283344758000}
+{"event":"test.start","name":"test_gamma","module":"allograph::auth::claims","status":"pass","error":null,"fields":{"test.name":"test_gamma","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"test_gamma","timestamp":1790655283344759000}
+{"fields":{"message":"event alpha"},"level":"INFO","target":"test_alpha","timestamp":1790655283344760000}
+{"fields":{"message":"event beta","error":"AllographDbQuery { message: \"connection refused\" }"},"level":"ERROR","target":"test_beta","timestamp":1790655283344761000}
+{"fields":{"message":"event gamma"},"level":"INFO","target":"test_gamma","timestamp":1790655283344762000}
+{"event":"test.end","name":"test_alpha","module":"allograph::auth::claims","duration_ms":10.0,"fields":{"test.name":"test_alpha","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"test_alpha","timestamp":1790655283344770000}
+{"event":"test.end","name":"test_beta","module":"allograph::auth::claims","duration_ms":15.0,"fields":{"test.name":"test_beta","test.module":"allograph::auth::claims","status":"fail"},"level":"INFO","target":"test_beta","timestamp":1790655283344775000}
+{"event":"test.end","name":"test_gamma","module":"allograph::auth::claims","duration_ms":20.0,"fields":{"test.name":"test_gamma","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"test_gamma","timestamp":1790655283344780000}

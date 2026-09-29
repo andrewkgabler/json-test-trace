@@ -368,7 +368,9 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let start_record = format!(
-                            r#"{{"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            self.test_name,
+                            self.test_module,
                             self.test_name,
                             self.test_module,
                             self.test_module,
@@ -386,7 +388,9 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let end_record = format!(
-                            r#"{{"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","duration_ms":0.0,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}}, "level":"INFO","target":"{}","timestamp":{}}}"#,
+                            self.test_name,
+                            self.test_module,
                             self.test_name,
                             self.test_module,
                             self.test_module,

@@ -22,21 +22,31 @@ description = """
 A replacement of the #[test] attribute that initializes
 tracing infrastructure before running tests.
 """
-include = ["src/lib.rs", "LICENSE-*", "README.md", "CHANGELOG.md"]
+include = ["src/lib.rs", "src/main.rs", "src/parser/", "LICENSE-*", "README.md", "CHANGELOG.md", "fixtures/"]
+
+[[bin]]
+name = "json-test-trace"
+path = "src/main.rs"
 
 [[test]]
 name = "default_log_filter"
 path = "tests/default_log_filter.rs"
 required-features = ["log", "unstable"]
 
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
 [features]
-default = ["trace", "color"]
+default = ["trace", "color", "cli"]
+cli = ["dep:clap"]
 trace = [
   "dep:tracing-subscriber",
   "dep:tracing",
   "dep:ctor",
   "dep:dtor",
-  "dep:serde_json",
+  "dep:chrono",
+  "dep:serde",
   "json-test-trace-macros/trace",
 ]
 log = [
@@ -54,6 +64,7 @@ members = ["macros"]
 
 [dependencies]
 json-test-trace-macros = { version = "0.3", path = "macros" }
+clap = { version = "4", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3.17", default-features = false, optional = true, features = [
   "env-filter",
   "fmt",
@@ -63,7 +74,9 @@ tracing = { version = "0.1.20", optional = true }
 env_logger = { version = "0.11", default-features = false, optional = true }
 ctor = { version = "0.2", optional = true }
 dtor = { version = "0.2", optional = true }
-serde_json = { version = "1.0", optional = true }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 logging = { version = "0.4.8", package = "log" }

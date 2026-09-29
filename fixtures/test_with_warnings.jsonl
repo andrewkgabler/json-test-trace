@@ -1,0 +1,4 @@
+{"event":"test.start","name":"test_with_warnings","module":"allograph::cache","status":"pass","error":null,"fields":{"test.name":"test_with_warnings","test.module":"allograph::cache","status":"pass"},"level":"INFO","target":"allograph::cache","timestamp":1790655283344757000}
+{"fields":{"message":"cache miss"},"level":"DEBUG","target":"allograph::cache","timestamp":1790655283344664000}
+{"fields":{"message":"cache miss"},"level":"DEBUG","target":"allograph::cache","timestamp":1790655283344710000}
+{"event":"test.end","name":"test_with_warnings","module":"allograph::cache","duration_ms":10.0,"fields":{"test.name":"test_with_warnings","test.module":"allograph::cache","status":"pass"},"level":"INFO","target":"allograph::cache","timestamp":1790655283344820000}

@@ -20,6 +20,15 @@ mod subscriber;
 pub use subscriber::{init_global_test_logging, init_test, TestGuard, get_log_file_path};
 
 #[cfg(feature = "trace")]
+mod parser;
+
+#[cfg(feature = "trace")]
+pub use parser::models::{
+    JsonLogLine, TestResult, TestParser, LogEvent, SummaryJson,
+    extract_error_type, build_summary, build_module_tree,
+};
+
+#[cfg(feature = "trace")]
 #[ctor::ctor]
 fn __json_test_trace_ctor() {
     init_global_test_logging();

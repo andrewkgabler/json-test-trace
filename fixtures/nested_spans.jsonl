@@ -1,0 +1,4 @@
+{"event":"test.start","name":"test_nested","module":"allograph::schema::parsing","status":"pass","error":null,"fields":{"test.name":"test_nested","test.module":"allograph::schema::parsing","status":"pass"},"level":"INFO","target":"allograph::schema::parsing","timestamp":1790655283344757000}
+{"fields":{"message":"new"},"level":"TRACE","target":"allograph::schema::parsing","span":{"name":"validate_query"},"timestamp":1790655283344664000}
+{"fields":{"message":"close"},"level":"TRACE","target":"allograph::schema::parsing","span":{"name":"validate_query"},"time.busy":"150µs","time.idle":"50µs","timestamp":1790655283344710000}
+{"event":"test.end","name":"test_nested","module":"allograph::schema::parsing","duration_ms":10.0,"fields":{"test.name":"test_nested","test.module":"allograph::schema::parsing","status":"pass"},"level":"INFO","target":"allograph::schema::parsing","timestamp":1790655283344820000}

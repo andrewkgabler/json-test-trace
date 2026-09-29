@@ -1,0 +1,4 @@
+{"event":"test.start","name":"test_will_panic","module":"allograph::auth::claims","status":"pass","error":null,"fields":{"test.name":"test_will_panic","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"allograph::auth::claims","timestamp":1790655283344757000}
+{"fields":{"message":"new"},"level":"TRACE","target":"allograph::auth::claims","timestamp":1790655283344664000}
+{"fields":{"message":"panic","payload":"assertion failed: result.is_ok()"},"level":"ERROR","target":"allograph::auth::claims","timestamp":1790655283344710000}
+{"event":"test.end","name":"test_will_panic","module":"allograph::auth::claims","duration_ms":10.0,"fields":{"test.name":"test_will_panic","test.module":"allograph::auth::claims","status":"pass"},"level":"INFO","target":"allograph::auth::claims","timestamp":1790655283344820000}
