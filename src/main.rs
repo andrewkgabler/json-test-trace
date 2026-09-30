@@ -130,37 +130,23 @@ fn run_query(
         }
     }
     let results_owned = parser.finalize();
-    let mut results: Vec<&models::TestResult> = results_owned.iter().collect();
-
-    if let Some(ref p) = path {
-        results.retain(|t| t.module.contains(p.as_str()));
-    }
-    if let Some(ref n) = name {
-        results.retain(|t| t.name.contains(n.as_str()));
-    }
-    if let Some(s) = status {
-        results.retain(|t| match s {
+    let results: Vec<&models::TestResult> = results_owned.iter()
+        .filter(|t| path.as_deref().map(|p| t.module.contains(p)).unwrap_or(true))
+        .filter(|t| name.as_deref().map(|n| t.name.contains(n)).unwrap_or(true))
+        .filter(|t| status.as_ref().map(|s| match s {
             StatusFilter::Pass => t.is_passed(),
             StatusFilter::Fail => !t.is_passed(),
-        });
-    }
-    if let Some(ref e) = error {
-        results.retain(|t| {
-            t.log_events.iter().any(|ev| {
-                if let models::LogEvent::SpanEvent { error: Some(err), .. } = ev {
-                    err.contains(e.as_str())
-                } else {
-                    false
-                }
-            })
-        });
-    }
-    if let Some(min) = min_duration {
-        results.retain(|t| t.duration_ms.map(|d| d >= min).unwrap_or(false));
-    }
-    if let Some(max) = max_duration {
-        results.retain(|t| t.duration_ms.map(|d| d <= max).unwrap_or(false));
-    }
+        }).unwrap_or(true))
+        .filter(|t| error.as_deref().map(|e| t.log_events.iter().any(|ev| {
+            if let models::LogEvent::SpanEvent { error: Some(err), .. } = ev {
+                err.find(e).is_some()
+            } else {
+                false
+            }
+        })).unwrap_or(true))
+        .filter(|t| min_duration.map(|d| t.duration_ms.map(|dd| dd >= d).unwrap_or(false)).unwrap_or(true))
+        .filter(|t| max_duration.map(|d| t.duration_ms.map(|dd| dd <= d).unwrap_or(false)).unwrap_or(true))
+        .collect();
 
     match format {
         OutputFormat::Json => print_json(&results),
