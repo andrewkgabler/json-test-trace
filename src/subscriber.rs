@@ -11,23 +11,10 @@ use std::env;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Write};
-use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
-use std::thread_local;
-
-thread_local! {
-    /// Whether the current test has panicked.
-    static TEST_PANICKED: AtomicBool = const { AtomicBool::new(false) };
-}
-
-/// Panic hook that sets the thread-local panicked flag.
-fn panic_hook(_info: &std::panic::PanicHookInfo) {
-    TEST_PANICKED.with(|flag| flag.store(true, std::sync::atomic::Ordering::Release));
-}
 use std::time::SystemTime;
 
 use serde_json::{self, Value};
-use tracing_subscriber::registry::SpanRef;
 
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
@@ -41,12 +28,10 @@ struct TestLogState {
     log_file_path: String,
     /// The file handle (opened once, appended to).
     file: Mutex<File>,
-    /// Per-test buffers keyed by test name (pre-serialized JSON lines).
+    /// Per-test buffers keyed by test name.
     test_buffers: Mutex<HashMap<String, Vec<u8>>>,
     /// Current test name being tracked (set by macro via span).
     current_test: Mutex<Option<String>>,
-    /// Test pass/fail result (set by macro via set_result).
-    test_result: Mutex<Option<bool>>,
 }
 
 impl TestLogState {
@@ -57,7 +42,6 @@ impl TestLogState {
             file: Mutex::new(file),
             test_buffers: Mutex::new(HashMap::new()),
             current_test: Mutex::new(None),
-            test_result: Mutex::new(None),
         })
     }
 }
@@ -133,9 +117,6 @@ pub fn init_global_test_logging() {
         .init();
 }
 
-/// Storage for span fields in span extensions.
-struct SpanFieldStorage(pub HashMap<String, Value>);
-
 /// A custom Layer that writes tracing events to per-test buffers.
 struct TestLogLayer;
 
@@ -146,9 +127,10 @@ where
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
-        ctx: tracing_subscriber::layer::Context<'_, S>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Use current_test set by on_new_span when the test span was created.
+        // The test span has test.name field; child events inherit the span context.
         let test_name = if let Some(state) = STATE.get() {
             let current = state.current_test.lock().ok();
             current.and_then(|c| c.clone())
@@ -157,18 +139,12 @@ where
         };
         
         if let Some(name) = test_name {
+            // Serialize event to JSON
             if let Some(state) = STATE.get() {
-                // Merge span fields from parent spans into event fields
-                let mut merged_fields = HashMap::new();
-                if let Some(scope) = ctx.event_scope(event) {
-                    for span in scope.from_root() {
-                        merge_span_fields(span, &mut merged_fields);
-                    }
-                }
-                
-                // Serialize event with span fields merged in (flat output)
-                if let Some(json) = serialize_event_flat(event, merged_fields) {
-                    if let Ok(mut buffers) = state.test_buffers.lock() {
+                let json = serialize_event(event);
+                if let Some(json) = json {
+                    let mut buffers = state.test_buffers.lock().ok();
+                    if let Some(ref mut buffers) = buffers {
                         let buffer = buffers.entry(name).or_insert_with(Vec::new);
                         buffer.extend_from_slice(json.as_bytes());
                         buffer.push(b'\n');
@@ -181,8 +157,8 @@ where
     fn on_new_span(
         &self,
         attrs: &tracing::span::Attributes<'_>,
-        id: &tracing::span::Id,
-        ctx: tracing_subscriber::layer::Context<'_, S>,
+        _id: &tracing::span::Id,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Track test name from span fields
         if let Some(test_name) = extract_test_name_from_span(attrs) {
@@ -191,18 +167,6 @@ where
                 if let Ok(mut current) = state.current_test.lock() {
                     *current = Some(test_name);
                 }
-            }
-        }
-        
-        // Store span fields in extensions for propagation to child events
-        let mut fields = HashMap::new();
-        let mut visitor = SpanFieldVisitor(&mut fields);
-        attrs.record(&mut visitor);
-        
-        if !fields.is_empty() {
-            let storage = SpanFieldStorage(fields);
-            if let Some(span) = ctx.span(id) {
-                span.extensions_mut().insert(storage);
             }
         }
     }
@@ -292,23 +256,10 @@ impl tracing::field::Visit for EventVisitor {
     }
 }
 
-/// Extract event fields as a HashMap.
-fn extract_event_fields(event: &tracing::Event<'_>) -> HashMap<String, Value> {
+/// Serialize a tracing event to JSON.
+fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
     let mut visitor = EventVisitor::new();
     event.record(&mut visitor);
-    visitor.fields
-}
-
-/// Serialize a tracing event to JSON with span fields merged at top level.
-fn serialize_event_flat(event: &tracing::Event<'_>, span_fields: HashMap<String, Value>) -> Option<String> {
-    let mut visitor = EventVisitor::new();
-    event.record(&mut visitor);
-    
-    // Merge span fields into event fields (span fields take precedence)
-    let mut fields = visitor.fields;
-    for (key, value) in span_fields {
-        fields.entry(key).or_insert(value);
-    }
     
     let timestamp = if visitor.timestamp == 0 {
         SystemTime::now()
@@ -319,62 +270,24 @@ fn serialize_event_flat(event: &tracing::Event<'_>, span_fields: HashMap<String,
         visitor.timestamp
     };
     
-    // Build flat JSON object — all fields at top level
+    let level = visitor.level;
+    let target = visitor.target;
+    let fields = visitor.fields;
+    
+    // Build JSON object using serde_json::Value
     let mut map = serde_json::Map::new();
     map.insert("timestamp".to_string(), Value::Number(
         serde_json::Number::from(timestamp)
     ));
-    map.insert("level".to_string(), Value::String(visitor.level));
-    map.insert("target".to_string(), Value::String(visitor.target));
-    // Insert all fields (including event fields and span fields) at top level
+    map.insert("level".to_string(), Value::String(level));
+    map.insert("target".to_string(), Value::String(target));
+    // Insert all fields at top level
     for (key, value) in fields {
         map.insert(key, value);
     }
     
-    Some(serde_json::to_string(&Value::Object(map)).ok()?)
-}
-
-/// Serialize a HashMap of fields to a JSON string with optional status injection.
-fn serialize_fields(fields: HashMap<String, Value>, status: Option<&str>) -> Option<String> {
-    let mut map = serde_json::Map::new();
-    
-    // Add status if provided
-    if let Some(s) = status {
-        map.insert("status".to_string(), Value::String(s.to_string()));
-    }
-    
-    // Add all fields
-    for (key, value) in fields {
-        map.insert(key, value);
-    }
-    
-    Some(serde_json::to_string(&Value::Object(map)).ok()?)
-}
-
-/// Visitor to extract all span fields for storage in extensions.
-struct SpanFieldVisitor<'a>(&'a mut HashMap<String, Value>);
-
-impl tracing::field::Visit for SpanFieldVisitor<'_> {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.0.insert(field.name().to_string(), EventVisitor::parse_value(value));
-    }
-
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        let debug_str = format!("{:?}", value);
-        self.0.insert(field.name().to_string(), EventVisitor::parse_value(&debug_str));
-    }
-}
-
-/// Merge fields from a span into the merged fields map.
-fn merge_span_fields<S>(span: SpanRef<'_, S>, merged: &mut HashMap<String, Value>)
-where
-    S: for<'a> LookupSpan<'a>,
-{
-    if let Some(storage) = span.extensions().get::<SpanFieldStorage>() {
-        for (key, value) in &storage.0 {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
+    let value = Value::Object(map);
+    serde_json::to_string(&value).ok()
 }
 
 /// Visitor to extract test.name field.
@@ -428,11 +341,6 @@ pub struct TestGuard {
 impl TestGuard {
     /// Create a new TestGuard for the given test.
     pub fn new(test_name: &str, test_module: &str) -> Self {
-        // Register panic hook to catch panics
-        std::panic::set_hook(Box::new(panic_hook));
-        // Clear panicked flag for this test
-        TEST_PANICKED.with(|flag| flag.store(false, std::sync::atomic::Ordering::Release));
-        
         if let Some(state) = STATE.get() {
             // Clear any existing buffer for this test
             if let Ok(mut buffers) = state.test_buffers.lock() {
@@ -449,45 +357,21 @@ impl TestGuard {
         }
     }
 
-    /// Set the test pass/fail result explicitly. Called by macro before drop.
-    pub fn set_result(&self, passed: bool) {
-        if passed {
-            TEST_PANICKED.with(|flag| flag.store(false, std::sync::atomic::Ordering::Release));
-        } else {
-            TEST_PANICKED.with(|flag| flag.store(true, std::sync::atomic::Ordering::Release));
-        }
-    }
-
-    /// Check if the test has panicked.
-    fn has_panicked(&self) -> bool {
-        TEST_PANICKED.with(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
-    }
-
     /// Flush the test's JSONL buffer to the log file.
     fn flush(&self) {
         if let Some(state) = STATE.get() {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 if let Some(buffer) = buffers.remove(&self.test_name) {
                     if let Ok(mut file) = state.file.lock() {
-                        // Determine pass/fail status from panic flag or explicit result
-                        let passed = !self.has_panicked();
-                        let status = if passed { "pass" } else { "fail" };
-                        
                         // Emit synthetic test.start record
                         let start_ts = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos();
-                        let start_fields = serde_json::json!({
-                            "test.name": self.test_name,
-                            "test.module": self.test_module,
-                            "status": status
-                        });
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}},"level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
-                            status,
                             self.test_name,
                             self.test_module,
                             self.test_module,
@@ -496,19 +380,8 @@ impl TestGuard {
                         let _ = file.write_all(start_record.as_bytes());
                         let _ = file.write_all(b"\n");
                         
-                        // Write buffered events with status injected
-                        let jsonl = String::from_utf8_lossy(&buffer);
-                        for line in jsonl.lines() {
-                            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) {
-                                if let Some(obj) = value.as_object_mut() {
-                                    obj.insert("status".to_string(), Value::String(status.to_string()));
-                                }
-                                if let Ok(json) = serde_json::to_string(&value) {
-                                    let _ = file.write_all(json.as_bytes());
-                                    let _ = file.write_all(b"\n");
-                                }
-                            }
-                        }
+                        // Write buffered events
+                        let _ = file.write_all(&buffer);
                         
                         // Emit synthetic test.end record
                         let end_ts = SystemTime::now()
@@ -516,10 +389,9 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"pass","error":null,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}},"level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
-                            status,
                             self.test_name,
                             self.test_module,
                             self.test_module,

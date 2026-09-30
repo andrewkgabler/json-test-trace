@@ -112,7 +112,7 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
   let test_name = &sig.ident;
   let test_name_str = test_name.to_string();
 
-let result = quote! {
+  let result = quote! {
     #[#inner_test]
     #(#ignored_attrs)*
     #vis #sig {
@@ -136,7 +136,7 @@ let result = quote! {
       };
 
       drop(__guard);
-      
+
       __result
     }
   };
