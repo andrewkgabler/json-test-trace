@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use serde_json::{self, Value};
+use tracing_subscriber::registry::SpanRef;
 
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
@@ -117,6 +118,9 @@ pub fn init_global_test_logging() {
         .init();
 }
 
+/// Storage for span fields in span extensions.
+struct SpanFieldStorage(pub HashMap<String, Value>);
+
 /// A custom Layer that writes tracing events to per-test buffers.
 struct TestLogLayer;
 
@@ -127,10 +131,9 @@ where
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Use current_test set by on_new_span when the test span was created.
-        // The test span has test.name field; child events inherit the span context.
         let test_name = if let Some(state) = STATE.get() {
             let current = state.current_test.lock().ok();
             current.and_then(|c| c.clone())
@@ -139,9 +142,16 @@ where
         };
         
         if let Some(name) = test_name {
-            // Serialize event to JSON
             if let Some(state) = STATE.get() {
-                let json = serialize_event(event);
+                // Merge span fields from parent spans into event fields
+                let mut merged_fields = HashMap::new();
+                if let Some(scope) = ctx.event_scope(event) {
+                    for span in scope.from_root() {
+                        merge_span_fields(span, &mut merged_fields);
+                    }
+                }
+                
+                let json = serialize_event_with_span_fields(event, merged_fields);
                 if let Some(json) = json {
                     let mut buffers = state.test_buffers.lock().ok();
                     if let Some(ref mut buffers) = buffers {
@@ -157,8 +167,8 @@ where
     fn on_new_span(
         &self,
         attrs: &tracing::span::Attributes<'_>,
-        _id: &tracing::span::Id,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Track test name from span fields
         if let Some(test_name) = extract_test_name_from_span(attrs) {
@@ -167,6 +177,18 @@ where
                 if let Ok(mut current) = state.current_test.lock() {
                     *current = Some(test_name);
                 }
+            }
+        }
+        
+        // Store span fields in extensions for propagation to child events
+        let mut fields = HashMap::new();
+        let mut visitor = SpanFieldVisitor(&mut fields);
+        attrs.record(&mut visitor);
+        
+        if !fields.is_empty() {
+            let storage = SpanFieldStorage(fields);
+            if let Some(span) = ctx.span(id) {
+                span.extensions_mut().insert(storage);
             }
         }
     }
@@ -256,10 +278,19 @@ impl tracing::field::Visit for EventVisitor {
     }
 }
 
-/// Serialize a tracing event to JSON.
-fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
+/// Serialize a tracing event to JSON with span fields merged in.
+fn serialize_event_with_span_fields(
+    event: &tracing::Event<'_>,
+    span_fields: HashMap<String, Value>,
+) -> Option<String> {
     let mut visitor = EventVisitor::new();
     event.record(&mut visitor);
+    
+    // Merge span fields into event fields (span fields take precedence)
+    let mut merged = visitor.fields;
+    for (key, value) in span_fields {
+        merged.entry(key).or_insert(value);
+    }
     
     let timestamp = if visitor.timestamp == 0 {
         SystemTime::now()
@@ -272,7 +303,6 @@ fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
     
     let level = visitor.level;
     let target = visitor.target;
-    let fields = visitor.fields;
     
     // Build JSON object using serde_json::Value
     let mut map = serde_json::Map::new();
@@ -281,12 +311,43 @@ fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
     ));
     map.insert("level".to_string(), Value::String(level));
     map.insert("fields".to_string(), Value::Object(
-        fields.into_iter().collect()
+        merged.into_iter().collect()
     ));
     map.insert("target".to_string(), Value::String(target));
     
     let value = Value::Object(map);
     serde_json::to_string(&value).ok()
+}
+
+/// Serialize a tracing event to JSON (without span fields).
+fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
+    serialize_event_with_span_fields(event, HashMap::new())
+}
+
+/// Visitor to extract all span fields for storage in extensions.
+struct SpanFieldVisitor<'a>(&'a mut HashMap<String, Value>);
+
+impl tracing::field::Visit for SpanFieldVisitor<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0.insert(field.name().to_string(), EventVisitor::parse_value(value));
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        let debug_str = format!("{:?}", value);
+        self.0.insert(field.name().to_string(), EventVisitor::parse_value(&debug_str));
+    }
+}
+
+/// Merge fields from a span into the merged fields map.
+fn merge_span_fields<S>(span: SpanRef<'_, S>, merged: &mut HashMap<String, Value>)
+where
+    S: for<'a> LookupSpan<'a>,
+{
+    if let Some(storage) = span.extensions().get::<SpanFieldStorage>() {
+        for (key, value) in &storage.0 {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 /// Visitor to extract test.name field.
