@@ -274,6 +274,7 @@ fn print_pretty(results: &[&models::TestResult]) {
                 "panicked": t.panicked,
                 "panic_message": t.panic_message,
                 "has_errors": t.has_errors,
+                "ignored": t.ignored,
                 "log_events": t.log_events.len()
             })
         })
@@ -294,6 +295,7 @@ fn print_json(results: &[&models::TestResult]) {
                 "panicked": t.panicked,
                 "panic_message": t.panic_message,
                 "has_errors": t.has_errors,
+                "ignored": t.ignored,
                 "log_events": t.log_events.len()
             })
         })
