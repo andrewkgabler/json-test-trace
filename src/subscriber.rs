@@ -15,11 +15,20 @@ use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use serde_json::{self, Value};
-
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+/// Storage for test.name in span extensions.
+struct TestNameStorage {
+    name: Option<String>,
+}
+
+/// Storage for test.module in span extensions.
+struct TestModuleStorage {
+    module: Option<String>,
+}
 
 /// Global state for the test logging subscriber.
 #[derive(Debug)]
@@ -127,7 +136,7 @@ where
     fn on_event(
         &self,
         event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Use current_test set by on_new_span when the test span was created.
         // The test span has test.name field; child events inherit the span context.
@@ -141,7 +150,27 @@ where
         if let Some(name) = test_name {
             // Serialize event to JSON
             if let Some(state) = STATE.get() {
-                let json = serialize_event(event);
+                // Collect span fields from the span hierarchy
+                let span_fields = if let Some(scope) = ctx.event_scope(event) {
+                    let mut fields = HashMap::new();
+                    for span in scope.from_root() {
+                        if let Some(test_n) = span.extensions().get::<TestNameStorage>() {
+                            if let Some(n) = &test_n.name {
+                                fields.insert("test.name".to_string(), Value::String(n.clone()));
+                            }
+                        }
+                        if let Some(test_m) = span.extensions().get::<TestModuleStorage>() {
+                            if let Some(m) = &test_m.module {
+                                fields.insert("test.module".to_string(), Value::String(m.clone()));
+                            }
+                        }
+                    }
+                    fields
+                } else {
+                    HashMap::new()
+                };
+                
+                let json = serialize_event(event, span_fields);
                 if let Some(json) = json {
                     let mut buffers = state.test_buffers.lock().ok();
                     if let Some(ref mut buffers) = buffers {
@@ -157,17 +186,30 @@ where
     fn on_new_span(
         &self,
         attrs: &tracing::span::Attributes<'_>,
-        _id: &tracing::span::Id,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Track test name from span fields
         if let Some(test_name) = extract_test_name_from_span(attrs) {
             eprintln!("json-test-trace: on_new_span test.name={}", test_name);
             if let Some(state) = STATE.get() {
                 if let Ok(mut current) = state.current_test.lock() {
-                    *current = Some(test_name);
+                    *current = Some(test_name.clone());
                 }
             }
+        }
+        
+        // Store test.name and test.module in span extensions for event propagation
+        if let Some(span) = ctx.span(id) {
+            let mut extensions = span.extensions_mut();
+            
+            // Extract test.name
+            let test_name = extract_test_name_from_span(attrs);
+            extensions.insert(TestNameStorage { name: test_name });
+            
+            // Extract test.module
+            let test_module = extract_test_module_from_span(attrs);
+            extensions.insert(TestModuleStorage { module: test_module });
         }
     }
 
@@ -257,7 +299,7 @@ impl tracing::field::Visit for EventVisitor {
 }
 
 /// Serialize a tracing event to JSON.
-fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
+fn serialize_event(event: &tracing::Event<'_>, span_fields: HashMap<String, Value>) -> Option<String> {
     let mut visitor = EventVisitor::new();
     event.record(&mut visitor);
     
@@ -281,7 +323,11 @@ fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
     ));
     map.insert("level".to_string(), Value::String(level));
     map.insert("target".to_string(), Value::String(target));
-    // Insert all fields at top level
+    // Insert span fields first (higher priority)
+    for (key, value) in span_fields {
+        map.insert(key, value);
+    }
+    // Then insert event fields
     for (key, value) in fields {
         map.insert(key, value);
     }
@@ -327,6 +373,38 @@ fn extract_test_name_from_span(attrs: &tracing::span::Attributes<'_>) -> Option<
     let mut visitor = TestNameVisitor::new();
     attrs.record(&mut visitor);
     visitor.name
+}
+
+/// Visitor to extract test.module field.
+struct TestModuleVisitor {
+    module: Option<String>,
+}
+
+impl TestModuleVisitor {
+    fn new() -> Self {
+        Self { module: None }
+    }
+}
+
+impl tracing::field::Visit for TestModuleVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "test.module" {
+            self.module = Some(value.to_string());
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+        if field.name() == "test.module" {
+            self.module = Some(format!("{:?}", value));
+        }
+    }
+}
+
+/// Extract test module from span attributes.
+fn extract_test_module_from_span(attrs: &tracing::span::Attributes<'_>) -> Option<String> {
+    let mut visitor = TestModuleVisitor::new();
+    attrs.record(&mut visitor);
+    visitor.module
 }
 
 /// Guard that flushes test logs on drop.
