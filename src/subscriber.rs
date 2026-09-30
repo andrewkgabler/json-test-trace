@@ -11,7 +11,19 @@ use std::env;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, OnceLock};
+use std::thread_local;
+
+thread_local! {
+    /// Whether the current test has panicked.
+    static TEST_PANICKED: AtomicBool = const { AtomicBool::new(false) };
+}
+
+/// Panic hook that sets the thread-local panicked flag.
+fn panic_hook(_info: &std::panic::PanicHookInfo) {
+    TEST_PANICKED.with(|flag| flag.store(true, std::sync::atomic::Ordering::Release));
+}
 use std::time::SystemTime;
 
 use serde_json::{self, Value};
@@ -29,10 +41,12 @@ struct TestLogState {
     log_file_path: String,
     /// The file handle (opened once, appended to).
     file: Mutex<File>,
-    /// Per-test buffers keyed by test name.
-    test_buffers: Mutex<HashMap<String, Vec<u8>>>,
+    /// Per-test buffers keyed by test name (raw field maps, serialized on flush).
+    test_buffers: Mutex<HashMap<String, Vec<HashMap<String, Value>>>>,
     /// Current test name being tracked (set by macro via span).
     current_test: Mutex<Option<String>>,
+    /// Test pass/fail result (set by macro via set_result).
+    test_result: Mutex<Option<bool>>,
 }
 
 impl TestLogState {
@@ -43,6 +57,7 @@ impl TestLogState {
             file: Mutex::new(file),
             test_buffers: Mutex::new(HashMap::new()),
             current_test: Mutex::new(None),
+            test_result: Mutex::new(None),
         })
     }
 }
@@ -151,14 +166,18 @@ where
                     }
                 }
                 
-                let json = serialize_event_with_span_fields(event, merged_fields);
-                if let Some(json) = json {
-                    let mut buffers = state.test_buffers.lock().ok();
-                    if let Some(ref mut buffers) = buffers {
-                        let buffer = buffers.entry(name).or_insert_with(Vec::new);
-                        buffer.extend_from_slice(json.as_bytes());
-                        buffer.push(b'\n');
-                    }
+                // Extract event fields
+                let mut event_fields = extract_event_fields(event);
+                
+                // Merge span fields into event fields (span fields take precedence)
+                for (key, value) in merged_fields {
+                    event_fields.entry(key).or_insert(value);
+                }
+                
+                // Store raw field map in buffer (serialize on flush with pass/fail)
+                if let Ok(mut buffers) = state.test_buffers.lock() {
+                    let buffer = buffers.entry(name).or_insert_with(Vec::new);
+                    buffer.push(event_fields);
                 }
             }
         }
@@ -278,50 +297,28 @@ impl tracing::field::Visit for EventVisitor {
     }
 }
 
-/// Serialize a tracing event to JSON with span fields merged in.
-fn serialize_event_with_span_fields(
-    event: &tracing::Event<'_>,
-    span_fields: HashMap<String, Value>,
-) -> Option<String> {
+/// Extract event fields as a HashMap.
+fn extract_event_fields(event: &tracing::Event<'_>) -> HashMap<String, Value> {
     let mut visitor = EventVisitor::new();
     event.record(&mut visitor);
-    
-    // Merge span fields into event fields (span fields take precedence)
-    let mut merged = visitor.fields;
-    for (key, value) in span_fields {
-        merged.entry(key).or_insert(value);
-    }
-    
-    let timestamp = if visitor.timestamp == 0 {
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
-    } else {
-        visitor.timestamp
-    };
-    
-    let level = visitor.level;
-    let target = visitor.target;
-    
-    // Build JSON object using serde_json::Value
-    let mut map = serde_json::Map::new();
-    map.insert("timestamp".to_string(), Value::Number(
-        serde_json::Number::from(timestamp)
-    ));
-    map.insert("level".to_string(), Value::String(level));
-    map.insert("fields".to_string(), Value::Object(
-        merged.into_iter().collect()
-    ));
-    map.insert("target".to_string(), Value::String(target));
-    
-    let value = Value::Object(map);
-    serde_json::to_string(&value).ok()
+    visitor.fields
 }
 
-/// Serialize a tracing event to JSON (without span fields).
-fn serialize_event(event: &tracing::Event<'_>) -> Option<String> {
-    serialize_event_with_span_fields(event, HashMap::new())
+/// Serialize a HashMap of fields to a JSON string with optional status injection.
+fn serialize_fields(fields: HashMap<String, Value>, status: Option<&str>) -> Option<String> {
+    let mut map = serde_json::Map::new();
+    
+    // Add status if provided
+    if let Some(s) = status {
+        map.insert("status".to_string(), Value::String(s.to_string()));
+    }
+    
+    // Add all fields
+    for (key, value) in fields {
+        map.insert(key, value);
+    }
+    
+    Some(serde_json::to_string(&Value::Object(map)).ok()?)
 }
 
 /// Visitor to extract all span fields for storage in extensions.
@@ -401,6 +398,11 @@ pub struct TestGuard {
 impl TestGuard {
     /// Create a new TestGuard for the given test.
     pub fn new(test_name: &str, test_module: &str) -> Self {
+        // Register panic hook to catch panics
+        std::panic::set_hook(Box::new(panic_hook));
+        // Clear panicked flag for this test
+        TEST_PANICKED.with(|flag| flag.store(false, std::sync::atomic::Ordering::Release));
+        
         if let Some(state) = STATE.get() {
             // Clear any existing buffer for this test
             if let Ok(mut buffers) = state.test_buffers.lock() {
@@ -417,43 +419,78 @@ impl TestGuard {
         }
     }
 
+    /// Set the test pass/fail result explicitly. Called by macro before drop.
+    pub fn set_result(&self, passed: bool) {
+        if passed {
+            TEST_PANICKED.with(|flag| flag.store(false, std::sync::atomic::Ordering::Release));
+        } else {
+            TEST_PANICKED.with(|flag| flag.store(true, std::sync::atomic::Ordering::Release));
+        }
+    }
+
+    /// Check if the test has panicked.
+    fn has_panicked(&self) -> bool {
+        TEST_PANICKED.with(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    }
+
     /// Flush the test's JSONL buffer to the log file.
     fn flush(&self) {
         if let Some(state) = STATE.get() {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 if let Some(buffer) = buffers.remove(&self.test_name) {
                     if let Ok(mut file) = state.file.lock() {
+                        // Determine pass/fail status from panic flag or explicit result
+                        let passed = !self.has_panicked();
+                        let status = if passed { "pass" } else { "fail" };
+                        
                         // Emit synthetic test.start record
                         let start_ts = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos();
+                        let start_fields = serde_json::json!({
+                            "test.name": self.test_name,
+                            "test.module": self.test_module,
+                            "status": status
+                        });
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}},"level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"fields":{},"level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
-                            self.test_name,
-                            self.test_module,
+                            status,
+                            serde_json::to_string(&start_fields).unwrap(),
                             self.test_module,
                             start_ts
                         );
                         let _ = file.write_all(start_record.as_bytes());
                         let _ = file.write_all(b"\n");
                         
-                        // Write buffered events
-                        let _ = file.write_all(&buffer);
+                        // Write buffered events with status injected
+                        for fields in &buffer {
+                            let mut enriched = fields.clone();
+                            enriched.insert("status".to_string(), Value::String(status.to_string()));
+                            if let Some(json) = serialize_fields(enriched, Some(status)) {
+                                let _ = file.write_all(json.as_bytes());
+                                let _ = file.write_all(b"\n");
+                            }
+                        }
                         
                         // Emit synthetic test.end record
                         let end_ts = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos();
+                        let end_fields = serde_json::json!({
+                            "test.name": self.test_name,
+                            "test.module": self.test_module,
+                            "status": status
+                        });
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"pass","error":null,"fields":{{"test.name":"{}","test.module":"{}","status":"pass"}},"level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"fields":{},"level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
-                            self.test_name,
-                            self.test_module,
+                            status,
+                            serde_json::to_string(&end_fields).unwrap(),
                             self.test_module,
                             end_ts
                         );
