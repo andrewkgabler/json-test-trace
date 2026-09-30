@@ -41,8 +41,8 @@ struct TestLogState {
     log_file_path: String,
     /// The file handle (opened once, appended to).
     file: Mutex<File>,
-    /// Per-test buffers keyed by test name (raw field maps, serialized on flush).
-    test_buffers: Mutex<HashMap<String, Vec<HashMap<String, Value>>>>,
+    /// Per-test buffers keyed by test name (pre-serialized JSON lines).
+    test_buffers: Mutex<HashMap<String, Vec<u8>>>,
     /// Current test name being tracked (set by macro via span).
     current_test: Mutex<Option<String>>,
     /// Test pass/fail result (set by macro via set_result).
@@ -166,18 +166,13 @@ where
                     }
                 }
                 
-                // Extract event fields
-                let mut event_fields = extract_event_fields(event);
-                
-                // Merge span fields into event fields (span fields take precedence)
-                for (key, value) in merged_fields {
-                    event_fields.entry(key).or_insert(value);
-                }
-                
-                // Store raw field map in buffer (serialize on flush with pass/fail)
-                if let Ok(mut buffers) = state.test_buffers.lock() {
-                    let buffer = buffers.entry(name).or_insert_with(Vec::new);
-                    buffer.push(event_fields);
+                // Serialize event with span fields merged in (flat output)
+                if let Some(json) = serialize_event_flat(event, merged_fields) {
+                    if let Ok(mut buffers) = state.test_buffers.lock() {
+                        let buffer = buffers.entry(name).or_insert_with(Vec::new);
+                        buffer.extend_from_slice(json.as_bytes());
+                        buffer.push(b'\n');
+                    }
                 }
             }
         }
@@ -302,6 +297,41 @@ fn extract_event_fields(event: &tracing::Event<'_>) -> HashMap<String, Value> {
     let mut visitor = EventVisitor::new();
     event.record(&mut visitor);
     visitor.fields
+}
+
+/// Serialize a tracing event to JSON with span fields merged at top level.
+fn serialize_event_flat(event: &tracing::Event<'_>, span_fields: HashMap<String, Value>) -> Option<String> {
+    let mut visitor = EventVisitor::new();
+    event.record(&mut visitor);
+    
+    // Merge span fields into event fields (span fields take precedence)
+    let mut fields = visitor.fields;
+    for (key, value) in span_fields {
+        fields.entry(key).or_insert(value);
+    }
+    
+    let timestamp = if visitor.timestamp == 0 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
+    } else {
+        visitor.timestamp
+    };
+    
+    // Build flat JSON object — all fields at top level
+    let mut map = serde_json::Map::new();
+    map.insert("timestamp".to_string(), Value::Number(
+        serde_json::Number::from(timestamp)
+    ));
+    map.insert("level".to_string(), Value::String(visitor.level));
+    map.insert("target".to_string(), Value::String(visitor.target));
+    // Insert all fields (including event fields and span fields) at top level
+    for (key, value) in fields {
+        map.insert(key, value);
+    }
+    
+    Some(serde_json::to_string(&Value::Object(map)).ok()?)
 }
 
 /// Serialize a HashMap of fields to a JSON string with optional status injection.
@@ -454,11 +484,12 @@ impl TestGuard {
                             "status": status
                         });
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"fields":{},"level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             status,
-                            serde_json::to_string(&start_fields).unwrap(),
+                            self.test_name,
+                            self.test_module,
                             self.test_module,
                             start_ts
                         );
@@ -466,12 +497,16 @@ impl TestGuard {
                         let _ = file.write_all(b"\n");
                         
                         // Write buffered events with status injected
-                        for fields in &buffer {
-                            let mut enriched = fields.clone();
-                            enriched.insert("status".to_string(), Value::String(status.to_string()));
-                            if let Some(json) = serialize_fields(enriched, Some(status)) {
-                                let _ = file.write_all(json.as_bytes());
-                                let _ = file.write_all(b"\n");
+                        let jsonl = String::from_utf8_lossy(&buffer);
+                        for line in jsonl.lines() {
+                            if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) {
+                                if let Some(obj) = value.as_object_mut() {
+                                    obj.insert("status".to_string(), Value::String(status.to_string()));
+                                }
+                                if let Ok(json) = serde_json::to_string(&value) {
+                                    let _ = file.write_all(json.as_bytes());
+                                    let _ = file.write_all(b"\n");
+                                }
                             }
                         }
                         
@@ -480,17 +515,13 @@ impl TestGuard {
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos();
-                        let end_fields = serde_json::json!({
-                            "test.name": self.test_name,
-                            "test.module": self.test_module,
-                            "status": status
-                        });
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"fields":{},"level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             status,
-                            serde_json::to_string(&end_fields).unwrap(),
+                            self.test_name,
+                            self.test_module,
                             self.test_module,
                             end_ts
                         );
