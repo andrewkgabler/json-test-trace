@@ -230,7 +230,6 @@ fn on_close(
 struct EventVisitor {
     timestamp: u64,
     level: String,
-    target: String,
     fields: HashMap<String, Value>,
 }
 
@@ -239,7 +238,6 @@ impl EventVisitor {
         Self {
             timestamp: 0,
             level: "INFO".to_string(),
-            target: "unknown".to_string(),
             fields: HashMap::new(),
         }
     }
@@ -275,7 +273,6 @@ impl tracing::field::Visit for EventVisitor {
                 }
             }
             "level" => self.level = value.to_string(),
-            "target" => self.target = value.to_string(),
             _ => {
                 self.fields.insert(field.name().to_string(), Self::parse_value(value));
             }
@@ -313,7 +310,6 @@ fn serialize_event(event: &tracing::Event<'_>, span_fields: HashMap<String, Valu
     };
     
     let level = visitor.level;
-    let target = visitor.target;
     let fields = visitor.fields;
     
     // Build JSON object using serde_json::Value
@@ -322,7 +318,6 @@ fn serialize_event(event: &tracing::Event<'_>, span_fields: HashMap<String, Valu
         serde_json::Number::from(timestamp)
     ));
     map.insert("level".to_string(), Value::String(level));
-    map.insert("target".to_string(), Value::String(target));
     // Insert span fields first (higher priority)
     for (key, value) in span_fields {
         map.insert(key, value);
@@ -447,11 +442,10 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             self.test_name,
-                            self.test_module,
                             self.test_module,
                             start_ts
                         );
@@ -467,11 +461,10 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","target":"{}","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             self.test_name,
-                            self.test_module,
                             self.test_module,
                             end_ts
                         );
