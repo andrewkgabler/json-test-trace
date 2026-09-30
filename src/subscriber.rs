@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, Write};
 use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use serde_json::{self, Value};
@@ -19,6 +20,23 @@ use tracing_subscriber::layer::Layer;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+
+/// Thread-local flag set by panic hook when a test panics.
+thread_local! {
+    static PANIC_FLAG: AtomicBool = const { AtomicBool::new(false) };
+}
+
+fn set_panic_flag() {
+    PANIC_FLAG.with(|flag| flag.store(true, Ordering::Relaxed));
+}
+
+fn is_panic_flag_set() -> bool {
+    PANIC_FLAG.with(|flag| flag.load(Ordering::Relaxed))
+}
+
+fn clear_panic_flag() {
+    PANIC_FLAG.with(|flag| flag.store(false, Ordering::Relaxed));
+}
 
 /// Storage for test.name in span extensions.
 struct TestNameStorage {
@@ -110,6 +128,13 @@ pub fn init_global_test_logging() {
         // Another thread beat us to it — subscriber already installed
         return;
     }
+
+    // Install custom panic hook to detect test panics
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        set_panic_flag();
+        original_hook(info);
+    }));
 
     // Install the global subscriber
     let filter = tracing_subscriber::EnvFilter::builder()
@@ -432,19 +457,25 @@ impl TestGuard {
 
     /// Flush the test's JSONL buffer to the log file.
     fn flush(&self) {
+        let panicked = is_panic_flag_set();
+        clear_panic_flag();
+        
         if let Some(state) = STATE.get() {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 if let Some(buffer) = buffers.remove(&self.test_name) {
                     if let Ok(mut file) = state.file.lock() {
+                        let status = if panicked { "fail" } else { "pass" };
+                        
                         // Emit synthetic test.start record
                         let start_ts = SystemTime::now()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_nanos();
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
+                            status,
                             self.test_name,
                             self.test_module,
                             start_ts
@@ -461,9 +492,10 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"pass","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
+                            status,
                             self.test_name,
                             self.test_module,
                             end_ts
