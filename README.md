@@ -5,10 +5,10 @@ A fork of [test-log](https://github.com/d-e-s-o/test-log) that automatically ini
 ## Features
 
 - `#[json_test_trace::test]` attribute macro — initializes tracing per-test
-- **JSON output** — set `RUST_LOG_STYLE=json` for newline-delimited JSON logs
-- **Span events** — set `RUST_LOG_SPAN_EVENTS=full` for span lifecycle events
+- **JSON output** — all logs are JSON by default
 - **Test lifecycle events** — emits `test.start` and `test.end` events
 - **Drop guard** — `test.end` is emitted even when a test panics
+- **Error capture** — panic hook extracts error_enum/error_message from panic messages
 
 ## Usage
 
@@ -25,29 +25,73 @@ async fn it_still_works() {
 }
 ```
 
+## Error Capture
+
+When tests panic with GraphQL errors, the panic hook extracts structured error info:
+
+```
+GraphQL error: [UserInput { message: "duplicate @id value: user-123" }]
+```
+
+This produces:
+- `error_enum`: "UserInput"
+- `error_message`: "duplicate @id value: user-123"
+
+These fields are injected into all JSONL records for the test (test.start, test.end, and all buffered events).
+
+### Required Panic Format
+
+Test helpers must panic with the error enum Debug format:
+
+```rust
+panic!("GraphQL error: {:?}", response.errors);
+```
+
+### Example JSONL Output
+
+```json
+{"event":"test.start","name":"test_graphql_error","status":"fail","error_enum":"UserInput","error_message":"duplicate @id value: user-123",...}
+{"level":"ERROR","message":"GraphQL error in response","error_enum":"UserInput","error_message":"duplicate @id value: user-123","error_code":"user-input",...}
+{"event":"test.end","name":"test_graphql_error","status":"fail","error_enum":"UserInput","error_message":"duplicate @id value: user-123",...}
+```
+
+### Summary Output
+
+The `summary` subcommand groups errors by `error_enum`:
+
+```json
+{
+  "tests": { "total": 1, "failed": 1 },
+  "errors": [
+    {
+      "error_enum": "UserInput",
+      "count": 1,
+      "messages": ["duplicate @id value: user-123"]
+    }
+  ]
+}
+```
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `RUST_LOG` | Log level filter (e.g. `trace`, `debug`, `info`) |
-| `RUST_LOG_STYLE` | Set to `json` for JSON output (default: pretty) |
-| `RUST_LOG_SPAN_EVENTS` | Span events: `new`, `enter`, `exit`, `close`, `active`, `full` (comma-separated) |
+| `TEST_LOG_FILE` | Path to JSONL output file (default: `/tmp/json-test-trace.jsonl`) |
 
 ## JSON Output Format
 
-With `RUST_LOG_STYLE=json`, each log line is a JSON object:
+Each log line is a JSON object:
 
 ```json
-{"timestamp":"2026-09-22T10:00:00.000000Z","level":"INFO","fields":{"message":"test.start","test.name":"test_parse_valid_sdl","test.module":"allograph::schema::parsing::operations::parser"},"target":"allograph::schema::parsing::operations::parser","span":{"name":"test_parse_valid_sdl"},"spans":[],"threadId":"ThreadId(1)"}
+{"timestamp":1790814889614061000,"level":"INFO","message":"GraphQL error in response","error_enum":"UserInput","error_message":"duplicate @id value: user-123","error_code":"user-input","test.name":"test_graphql_error","test.module":"error_helper_demo"}
 ```
 
 ### Test Lifecycle Events
 
-| Event | `fields.message` | Description |
-|-------|-----------------|-------------|
-| Test start | `test.start` | Test begins. Includes `test.name` and `test.module`. |
+| Event | `event` field | Description |
+|-------|---------------|-------------|
+| Test start | `test.start` | Test begins. Includes `test.name`, `test.module`, `error_enum`, `error_message`. |
 | Test end | `test.end` | Test completes (normal exit or via drop guard on panic). |
-| Panic | `panic` | Test panicked. `payload` contains the panic message. |
 
 ### Error Logging
 
@@ -59,10 +103,14 @@ tracing::error!(error = ?e, "DB error");
 
 This produces:
 ```json
-{"level":"ERROR","fields":{"message":"DB error","error":"AllographDbQuery { message: \"unique constraint violation: ...\" }"}}
+{"level":"ERROR","message":"DB error","error":"AllographDbQuery { message: \"unique constraint violation: ...\" }"}
 ```
 
-The variant name (`AllographDbQuery`) is extractable via regex for grouping/filtering in downstream tools.
+For structured error capture, use `error_enum`, `error_message`, `error_code` fields:
+
+```rust
+tracing::error!(error_enum = "UserInput", error_message = "duplicate @id value: user-123", error_code = "user-input", "GraphQL error in response");
+```
 
 ## Features (Cargo)
 
