@@ -38,6 +38,47 @@ fn clear_panic_flag() {
     PANIC_FLAG.with(|flag| flag.store(false, Ordering::Relaxed));
 }
 
+/// Downcast a panic payload to &str if possible.
+fn payload_downcast_str(payload: &dyn std::any::Any) -> Option<&str> {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        Some(*s)
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        Some(s.as_str())
+    } else {
+        None
+    }
+}
+
+/// Extract error_enum and error_message from a panic message.
+///
+/// Handles formats like:
+/// - "GraphQL error: [UserInput { message: \"duplicate @id value: user-123\" }]"
+/// - "GraphQL error: [AdminSdl { message: \"type conflict: User already exists\" }]"
+/// - "GraphQL error: [AllographDbQuery { message: \"unique constraint violation: email\" }]"
+fn extract_error_from_panic_msg(msg: &str) -> Option<(&str, &str)> {
+    // Look for pattern: GraphQL error: [VariantName { message: "..." }]
+    if !msg.contains("GraphQL error:") {
+        return None;
+    }
+    
+    // Extract the part after "GraphQL error: "
+    let graphql_part = msg.split("GraphQL error:").nth(1)?.trim();
+    
+    // Extract variant name (first word before {, strip leading [)
+    let brace_pos = graphql_part.find('{')?;
+    let variant = graphql_part[..brace_pos].trim().trim_start_matches('[');
+    
+    // Extract message content between message: "..."
+    let message_start = graphql_part.find("message:")?;
+    let message_rest = &graphql_part[message_start..];
+    let message = message_rest
+        .split('"')
+        .nth(1)
+        .or_else(|| message_rest.split(':').nth(1).map(|s| s.trim_start().trim_matches('"')))?;
+    
+    Some((variant, message))
+}
+
 /// Storage for test.name in span extensions.
 struct TestNameStorage {
     name: Option<String>,
@@ -59,6 +100,10 @@ struct TestLogState {
     test_buffers: Mutex<HashMap<String, Vec<u8>>>,
     /// Current test name being tracked (set by macro via span).
     current_test: Mutex<Option<String>>,
+    /// Error enum name captured from panic hook (e.g., "UserInput").
+    error_enum: Mutex<Option<String>>,
+    /// Error message captured from panic hook (e.g., "duplicate @id value: user-123").
+    error_message: Mutex<Option<String>>,
 }
 
 impl TestLogState {
@@ -69,6 +114,8 @@ impl TestLogState {
             file: Mutex::new(file),
             test_buffers: Mutex::new(HashMap::new()),
             current_test: Mutex::new(None),
+            error_enum: Mutex::new(None),
+            error_message: Mutex::new(None),
         })
     }
 }
@@ -129,10 +176,26 @@ pub fn init_global_test_logging() {
         return;
     }
 
-    // Install custom panic hook to detect test panics
+    // Install custom panic hook to detect test panics and capture error info
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         set_panic_flag();
+        
+        // Capture error_enum and error_message from panic payload
+        if let Some(state) = STATE.get() {
+            let payload = info.payload();
+            if let Some(msg) = payload_downcast_str(payload) {
+                if let Some((enum_, message)) = extract_error_from_panic_msg(msg) {
+                    if let Ok(mut e) = state.error_enum.lock() {
+                        *e = Some(enum_.to_string());
+                    }
+                    if let Ok(mut m) = state.error_message.lock() {
+                        *m = Some(message.to_string());
+                    }
+                }
+            }
+        }
+        
         original_hook(info);
     }));
 
@@ -460,6 +523,18 @@ impl TestGuard {
         let panicked = is_panic_flag_set();
         clear_panic_flag();
         
+        // Capture error info before clearing
+        let error_enum = if let Some(state) = STATE.get() {
+            state.error_enum.lock().ok().and_then(|e| e.clone())
+        } else {
+            None
+        };
+        let error_message = if let Some(state) = STATE.get() {
+            state.error_message.lock().ok().and_then(|m| m.clone())
+        } else {
+            None
+        };
+        
         if let Some(state) = STATE.get() {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 if let Some(buffer) = buffers.remove(&self.test_name) {
@@ -472,10 +547,12 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             status,
+                            error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                            error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
                             self.test_name,
                             self.test_module,
                             start_ts
@@ -483,8 +560,38 @@ impl TestGuard {
                         let _ = file.write_all(start_record.as_bytes());
                         let _ = file.write_all(b"\n");
                         
-                        // Write buffered events
-                        let _ = file.write_all(&buffer);
+                        // Inject error_enum/error_message into buffered events
+                        if let (Some(_), Some(_)) = (&error_enum, &error_message) {
+                            for line in buffer.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                                if let Ok(line_str) = std::str::from_utf8(line) {
+                                    if let Ok(mut value) = serde_json::from_str::<Value>(line_str) {
+                                        if let Some(obj) = value.as_object_mut() {
+                                            if let Some(ref enum_) = error_enum {
+                                                obj.insert("error_enum".into(), Value::String(enum_.clone()));
+                                            }
+                                            if let Some(ref msg) = error_message {
+                                                obj.insert("error_message".into(), Value::String(msg.clone()));
+                                            }
+                                        }
+                                        if let Some(json) = serde_json::to_string(&value).ok() {
+                                            let _ = file.write_all(json.as_bytes());
+                                            let _ = file.write_all(b"\n");
+                                        }
+                                    } else {
+                                        // If we can't parse it, write as-is
+                                        let _ = file.write_all(line);
+                                        let _ = file.write_all(b"\n");
+                                    }
+                                } else {
+                                    // If we can't convert to UTF-8, write as-is
+                                    let _ = file.write_all(line);
+                                    let _ = file.write_all(b"\n");
+                                }
+                            }
+                        } else {
+                            // No error info, write buffer as-is
+                            let _ = file.write_all(&buffer);
+                        }
                         
                         // Emit synthetic test.end record
                         let end_ts = SystemTime::now()
@@ -492,10 +599,12 @@ impl TestGuard {
                             .unwrap_or_default()
                             .as_nanos();
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
                             self.test_name,
                             self.test_module,
                             status,
+                            error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                            error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
                             self.test_name,
                             self.test_module,
                             end_ts

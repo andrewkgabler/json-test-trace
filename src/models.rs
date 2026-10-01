@@ -39,9 +39,15 @@ pub struct JsonLogLine {
     #[serde(default)]
     pub level: Option<String>,
     #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
     pub fields: Option<Fields>,
     #[serde(default)]
     pub target: Option<String>,
+    #[serde(default, rename = "test.name")]
+    pub test_name: Option<String>,
+    #[serde(default, rename = "test.module")]
+    pub test_module: Option<String>,
     #[serde(default)]
     pub span: Option<SpanInfo>,
     #[serde(default)]
@@ -58,6 +64,10 @@ pub struct JsonLogLine {
     pub status: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub error_enum: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<f64>,
 }
@@ -96,6 +106,8 @@ pub enum LogEvent {
         time_busy: Option<String>,
         time_idle: Option<String>,
         error: Option<String>,
+        error_enum: Option<String>,
+        error_message: Option<String>,
     },
 }
 
@@ -188,16 +200,20 @@ impl TestParser {
         }
         
         // Handle regular tracing events (span events)
-        if let (Some(fields), Some(target)) = (&log.fields, &log.target) {
-            if let Some(ref message) = fields.message {
-                // Find the test that this event belongs to by checking span.name or target
+        if let Some(ref message) = log.message.or_else(|| log.fields.as_ref().and_then(|f| f.message.clone())) {
+            // Find the test that this event belongs to by checking span.name, target, or test.name
+            let test_key = log.test_name.clone()
+                .or_else(|| log.fields.as_ref().and_then(|f| f.test_name.clone()))
+                .or_else(|| log.target.clone());
+            
+            if let Some(ref key) = test_key {
                 for test in self.current_tests.values_mut() {
-                    if test.module == *target || test.name == *target {
+                    if test.module == *key || test.name == *key {
                         if message == "panic" {
                             test.panicked = true;
-                            test.panic_message = fields.payload.clone();
+                            test.panic_message = log.fields.as_ref().and_then(|f| f.payload.clone());
                         }
-                        if fields.error.is_some() {
+                        if log.fields.as_ref().map(|f| f.error.is_some()).unwrap_or(false) {
                             test.has_errors = true;
                         }
                         
@@ -206,12 +222,14 @@ impl TestParser {
                         test.log_events.push(LogEvent::SpanEvent {
                             message: message.clone(),
                             span_name,
-                            target: target.clone(),
+                            target: log.target.clone().unwrap_or_default(),
                             level: log.level.clone().unwrap_or_default(),
                             timestamp: log.timestamp.unwrap_or(chrono::Utc::now()),
-                            time_busy: fields.time_busy.clone(),
-                            time_idle: fields.time_idle.clone(),
-                            error: fields.error.clone(),
+                            time_busy: log.fields.as_ref().and_then(|f| f.time_busy.clone()),
+                            time_idle: log.fields.as_ref().and_then(|f| f.time_idle.clone()),
+                            error: log.fields.as_ref().and_then(|f| f.error.clone()),
+                            error_enum: log.error_enum.clone(),
+                            error_message: log.error_message.clone(),
                         });
                         break;
                     }
@@ -251,21 +269,36 @@ pub fn build_summary(results: Vec<TestResult>) -> serde_json::Value {
     let ignored = results.iter().filter(|t| t.ignored).count();
     let panics = results.iter().filter(|t| t.panicked).count();
     
-    let mut errors: Vec<(String, usize)> = Vec::new();
+    // Group errors by error_enum, collecting messages
+    let mut errors_by_enum: HashMap<String, Vec<String>> = HashMap::new();
     for test in &results {
         for event in &test.log_events {
-            if let LogEvent::SpanEvent { error: Some(err), .. } = event {
+            if let LogEvent::SpanEvent { error_enum: Some(enum_), error_message: Some(msg), .. } = event {
+                errors_by_enum
+                    .entry(enum_.clone())
+                    .or_default()
+                    .push(msg.clone());
+            }
+        }
+    }
+    
+    // Also extract from error field for backward compatibility
+    for test in &results {
+        for event in &test.log_events {
+            if let LogEvent::SpanEvent { error: Some(err), error_enum: None, .. } = event {
                 if let Some((cat, _)) = extract_error_type(err) {
-                    let count = errors.iter().position(|(c, _)| c == cat);
-                    match count {
-                        Some(idx) => { errors[idx].1 += 1; }
-                        None => { errors.push((cat.to_string(), 1)); }
+                    // Only add if not already present via error_enum
+                    if !errors_by_enum.contains_key(cat) {
+                        let count = errors_by_enum.iter().position(|(c, _)| c == cat);
+                        match count {
+                            Some(idx) => { /* already exists */ }
+                            None => { errors_by_enum.insert(cat.to_string(), Vec::new()); }
+                        }
                     }
                 }
             }
         }
     }
-    errors.sort_by(|a, b| b.1.cmp(&a.1));
     
     let modules: Vec<String> = results.iter().map(|t| t.module.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
     
@@ -277,9 +310,10 @@ pub fn build_summary(results: Vec<TestResult>) -> serde_json::Value {
             "ignored": ignored,
             "panicked": panics,
         },
-        "errors": errors.into_iter().map(|(cat, count)| serde_json::json!({
-            "category": cat,
-            "count": count,
+        "errors": errors_by_enum.into_iter().map(|(enum_, messages)| serde_json::json!({
+            "error_enum": enum_,
+            "count": messages.len(),
+            "messages": messages,
         })).collect::<Vec<_>>(),
         "modules": modules,
     })
