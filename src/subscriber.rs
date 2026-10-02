@@ -4,7 +4,7 @@
 //! Global test logging subscriber that writes JSONL to a file.
 //!
 //! Each test's events are accumulated in a per-test buffer and flushed
-//! atomically as a contiguous block on test completion.
+//! atomically as a contiguous block on test completion (normal exit or panic).
 
 use std::collections::HashMap;
 use std::env;
@@ -89,6 +89,36 @@ struct TestModuleStorage {
     module: Option<String>,
 }
 
+/// Thread-local storage for current test name (avoids global mutex race).
+thread_local! {
+    static CURRENT_TEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Thread-local storage for per-test error info (avoids global mutex race).
+thread_local! {
+    static ERROR_MAP: std::cell::RefCell<HashMap<String, (Option<String>, Option<String>)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+fn set_current_test(name: &str) {
+    CURRENT_TEST.with(|ct| *ct.borrow_mut() = Some(name.to_string()));
+}
+
+fn get_current_test() -> Option<String> {
+    CURRENT_TEST.with(|ct| ct.borrow().clone())
+}
+
+fn record_error(test_name: &str, error_enum: &str, error_message: &str) {
+    ERROR_MAP.with(|em| {
+        em.borrow_mut().insert(test_name.to_string(), (Some(error_enum.to_string()), Some(error_message.to_string())));
+    });
+}
+
+fn take_error(test_name: &str) -> (Option<String>, Option<String>) {
+    ERROR_MAP.with(|em| {
+        em.borrow_mut().remove(test_name).unwrap_or_default()
+    })
+}
+
 /// Global state for the test logging subscriber.
 #[derive(Debug)]
 struct TestLogState {
@@ -98,12 +128,6 @@ struct TestLogState {
     file: Mutex<File>,
     /// Per-test buffers keyed by test name.
     test_buffers: Mutex<HashMap<String, Vec<u8>>>,
-    /// Current test name being tracked (set by macro via span).
-    current_test: Mutex<Option<String>>,
-    /// Error enum name captured from panic hook (e.g., "UserInput").
-    error_enum: Mutex<Option<String>>,
-    /// Error message captured from panic hook (e.g., "duplicate @id value: user-123").
-    error_message: Mutex<Option<String>>,
 }
 
 impl TestLogState {
@@ -113,9 +137,6 @@ impl TestLogState {
             log_file_path,
             file: Mutex::new(file),
             test_buffers: Mutex::new(HashMap::new()),
-            current_test: Mutex::new(None),
-            error_enum: Mutex::new(None),
-            error_message: Mutex::new(None),
         })
     }
 }
@@ -128,11 +149,9 @@ pub fn get_log_file_path() -> Option<String> {
     STATE.get().map(|s| s.log_file_path.clone())
 }
 
-/// Clear the current test name in global state.
-fn clear_current_test(state: &TestLogState) {
-    if let Ok(mut current) = state.current_test.lock() {
-        *current = None;
-    }
+/// Clear the current test name in thread-local storage.
+fn clear_current_test() {
+    CURRENT_TEST.with(|ct| *ct.borrow_mut() = None);
 }
 
 /// Initialize the global test logging subscriber.
@@ -183,14 +202,12 @@ pub fn init_global_test_logging() {
         
         // Capture error_enum and error_message from panic payload
         if let Some(state) = STATE.get() {
+            let test_name = get_current_test();
             let payload = info.payload();
             if let Some(msg) = payload_downcast_str(payload) {
                 if let Some((enum_, message)) = extract_error_from_panic_msg(msg) {
-                    if let Ok(mut e) = state.error_enum.lock() {
-                        *e = Some(enum_.to_string());
-                    }
-                    if let Ok(mut m) = state.error_message.lock() {
-                        *m = Some(message.to_string());
+                    if let Some(name) = test_name {
+                        record_error(&name, enum_, message);
                     }
                 }
             }
@@ -198,6 +215,46 @@ pub fn init_global_test_logging() {
         
         original_hook(info);
     }));
+
+    // Install Ctrl+C signal handler to flush all buffered logs
+    if let Err(e) = ctrlc::set_handler(|| {
+        // Flush all buffered test logs on Ctrl+C
+        if let Some(state) = STATE.get() {
+            if let Ok(mut buffers) = state.test_buffers.lock() {
+                if let Ok(mut file) = state.file.lock() {
+                    let now = SystemTime::now()
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos();
+                    
+                    for (name, buffer) in buffers.drain() {
+                        let start_ts = now;
+                        let end_ts = now + 1;
+                        
+                        let start_record = format!(
+                            r#"{{"event":"test.start","name":"{}","module":"","status":"pass","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
+                            name, name, start_ts
+                        );
+                        let _ = file.write_all(start_record.as_bytes());
+                        let _ = file.write_all(b"\n");
+                        
+                        let _ = file.write_all(&buffer);
+                        
+                        let end_record = format!(
+                            r#"{{"event":"test.end","name":"{}","module":"","status":"pass","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
+                            name, name, end_ts
+                        );
+                        let _ = file.write_all(end_record.as_bytes());
+                        let _ = file.write_all(b"\n");
+                    }
+                    let _ = file.flush();
+                }
+            }
+        }
+        std::process::exit(130);
+    }) {
+        eprintln!("json-test-trace: failed to install Ctrl+C handler: {}", e);
+    }
 
     // Install the global subscriber
     let filter = tracing_subscriber::EnvFilter::builder()
@@ -228,12 +285,7 @@ where
     ) {
         // Use current_test set by on_new_span when the test span was created.
         // The test span has test.name field; child events inherit the span context.
-        let test_name = if let Some(state) = STATE.get() {
-            let current = state.current_test.lock().ok();
-            current.and_then(|c| c.clone())
-        } else {
-            None
-        };
+        let test_name = get_current_test();
         
         if let Some(name) = test_name {
             // Serialize event to JSON
@@ -280,11 +332,7 @@ where
         // Track test name from span fields
         if let Some(test_name) = extract_test_name_from_span(attrs) {
             eprintln!("json-test-trace: on_new_span test.name={}", test_name);
-            if let Some(state) = STATE.get() {
-                if let Ok(mut current) = state.current_test.lock() {
-                    *current = Some(test_name.clone());
-                }
-            }
+            set_current_test(&test_name);
         }
         
         // Store test.name and test.module in span extensions for event propagation
@@ -301,16 +349,14 @@ where
         }
     }
 
-fn on_close(
+    fn on_close(
         &self,
         _id: tracing::span::Id,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Clear current test name on span close.
         // Do NOT flush here — TestGuard::drop() handles flushing.
-        if let Some(state) = STATE.get() {
-            clear_current_test(state);
-        }
+        clear_current_test();
     }
 }
 
@@ -444,13 +490,6 @@ impl tracing::field::Visit for TestNameVisitor {
     }
 }
 
-/// Extract test name from an event's span context.
-fn extract_test_name(event: &tracing::Event<'_>) -> Option<String> {
-    let mut visitor = TestNameVisitor::new();
-    event.record(&mut visitor);
-    visitor.name
-}
-
 /// Extract test name from span attributes.
 fn extract_test_name_from_span(attrs: &tracing::span::Attributes<'_>) -> Option<String> {
     let mut visitor = TestNameVisitor::new();
@@ -507,10 +546,8 @@ impl TestGuard {
             if let Ok(mut buffers) = state.test_buffers.lock() {
                 buffers.remove(test_name);
             }
-            // Set current test
-            if let Ok(mut current) = state.current_test.lock() {
-                *current = Some(test_name.to_string());
-            }
+            // Set current test in thread-local storage
+            set_current_test(test_name);
         }
         Self {
             test_name: test_name.to_string(),
@@ -523,100 +560,88 @@ impl TestGuard {
         let panicked = is_panic_flag_set();
         clear_panic_flag();
         
-        // Capture error info before clearing
-        let error_enum = if let Some(state) = STATE.get() {
-            state.error_enum.lock().ok().and_then(|e| e.clone())
-        } else {
-            None
-        };
-        let error_message = if let Some(state) = STATE.get() {
-            state.error_message.lock().ok().and_then(|m| m.clone())
-        } else {
-            None
-        };
+        // Take error info for this specific test (thread-local, no race)
+        let (error_enum, error_message) = take_error(&self.test_name);
         
         if let Some(state) = STATE.get() {
-            if let Ok(mut buffers) = state.test_buffers.lock() {
-                if let Some(buffer) = buffers.remove(&self.test_name) {
-                    if let Ok(mut file) = state.file.lock() {
-                        let status = if panicked { "fail" } else { "pass" };
-                        
-                        // Emit synthetic test.start record
-                        let start_ts = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos();
-                        let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
-                            self.test_name,
-                            self.test_module,
-                            status,
-                            error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
-                            error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
-                            self.test_name,
-                            self.test_module,
-                            start_ts
-                        );
-                        let _ = file.write_all(start_record.as_bytes());
-                        let _ = file.write_all(b"\n");
-                        
-                        // Inject error_enum/error_message into buffered events
-                        if let (Some(_), Some(_)) = (&error_enum, &error_message) {
-                            for line in buffer.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-                                if let Ok(line_str) = std::str::from_utf8(line) {
-                                    if let Ok(mut value) = serde_json::from_str::<Value>(line_str) {
-                                        if let Some(obj) = value.as_object_mut() {
-                                            if let Some(ref enum_) = error_enum {
-                                                obj.insert("error_enum".into(), Value::String(enum_.clone()));
-                                            }
-                                            if let Some(ref msg) = error_message {
-                                                obj.insert("error_message".into(), Value::String(msg.clone()));
-                                            }
-                                        }
-                                        if let Some(json) = serde_json::to_string(&value).ok() {
-                                            let _ = file.write_all(json.as_bytes());
-                                            let _ = file.write_all(b"\n");
-                                        }
-                                    } else {
-                                        // If we can't parse it, write as-is
-                                        let _ = file.write_all(line);
+            let buffer = if let Ok(mut buffers) = state.test_buffers.lock() {
+                buffers.remove(&self.test_name)
+            } else {
+                None
+            };
+            
+            if let Ok(mut file) = state.file.lock() {
+                let status = if panicked { "fail" } else { "pass" };
+                
+                // Emit synthetic test.start record
+                let start_ts = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let start_record = format!(
+                    r#"{{"event":"test.start","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                    self.test_name,
+                    self.test_module,
+                    status,
+                    error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                    error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                    self.test_name,
+                    self.test_module,
+                    start_ts
+                );
+                let _ = file.write_all(start_record.as_bytes());
+                let _ = file.write_all(b"\n");
+                
+                // Write buffered events (if any)
+                if let Some(ref buffer) = buffer {
+                    if let (Some(ref enum_), Some(ref msg)) = (&error_enum, &error_message) {
+                        for line in buffer.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                            if let Ok(line_str) = std::str::from_utf8(line) {
+                                if let Ok(mut value) = serde_json::from_str::<Value>(line_str) {
+                                    if let Some(obj) = value.as_object_mut() {
+                                        obj.insert("error_enum".into(), Value::String(enum_.clone()));
+                                        obj.insert("error_message".into(), Value::String(msg.clone()));
+                                    }
+                                    if let Some(json) = serde_json::to_string(&value).ok() {
+                                        let _ = file.write_all(json.as_bytes());
                                         let _ = file.write_all(b"\n");
                                     }
                                 } else {
-                                    // If we can't convert to UTF-8, write as-is
                                     let _ = file.write_all(line);
                                     let _ = file.write_all(b"\n");
                                 }
+                            } else {
+                                let _ = file.write_all(line);
+                                let _ = file.write_all(b"\n");
                             }
-                        } else {
-                            // No error info, write buffer as-is
-                            let _ = file.write_all(&buffer);
                         }
-                        
-                        // Emit synthetic test.end record
-                        let end_ts = SystemTime::now()
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos();
-                        let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
-                            self.test_name,
-                            self.test_module,
-                            status,
-                            error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
-                            error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
-                            self.test_name,
-                            self.test_module,
-                            end_ts
-                        );
-                        let _ = file.write_all(end_record.as_bytes());
-                        let _ = file.write_all(b"\n");
-                        
-                        let _ = file.flush();
+                    } else {
+                        let _ = file.write_all(buffer);
                     }
                 }
+                
+                // Emit synthetic test.end record
+                let end_ts = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let end_record = format!(
+                    r#"{{"event":"test.end","name":"{}","module":"{}","status":"{}","error":null,"error_enum":{},"error_message":{},"test.name":"{}","test.module":"{}","level":"INFO","timestamp":{}}}"#,
+                    self.test_name,
+                    self.test_module,
+                    status,
+                    error_enum.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                    error_message.as_ref().map(|s| format!("\"{}\"", s)).unwrap_or_else(|| "null".to_string()),
+                    self.test_name,
+                    self.test_module,
+                    end_ts
+                );
+                let _ = file.write_all(end_record.as_bytes());
+                let _ = file.write_all(b"\n");
+                
+                let _ = file.flush();
             }
-            clear_current_test(state);
+            clear_current_test();
         }
     }
 }

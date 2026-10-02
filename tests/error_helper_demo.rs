@@ -110,6 +110,7 @@ impl AssertNoGraphqlErrors for GraphqlResponse {
 // ============================================================
 
 #[json_test_trace::test]
+#[should_panic(expected = "GraphQL error: [UserInput")]
 fn option1_helper_function() {
     let response = GraphqlResponse {
         data: None,
