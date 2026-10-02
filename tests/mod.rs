@@ -121,7 +121,6 @@ async fn trace_with_tokio_attribute_with_arguments() {
 // prevent accidental regressions. In the past we were susceptible to a
 // compilation error because generated code was using Iterator::map (but
 // not using fully qualified syntax).
-#[allow(dead_code)]
 trait Foo: Sized {
   fn map(self) {}
 }
