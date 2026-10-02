@@ -38,12 +38,21 @@ fn clear_panic_flag() {
     PANIC_FLAG.with(|flag| flag.store(false, Ordering::Relaxed));
 }
 
-/// Downcast a panic payload to &str if possible.
-fn payload_downcast_str(payload: &dyn std::any::Any) -> Option<&str> {
+/// Downcast a panic payload to a string if possible.
+///
+/// Handles three payload types:
+/// - `&str` — simple panic!("literal")
+/// - `String` — panic!(formatted_string) in some Rust versions
+/// - `Arguments<'_>` — panic!("format {}", args) — most common for formatted panics
+fn payload_downcast_str(payload: &dyn std::any::Any) -> Option<String> {
     if let Some(s) = payload.downcast_ref::<&str>() {
-        Some(*s)
+        Some(s.to_string())
     } else if let Some(s) = payload.downcast_ref::<String>() {
-        Some(s.as_str())
+        Some(s.clone())
+    } else if let Some(args) = payload.downcast_ref::<std::fmt::Arguments>() {
+        // Format the Arguments to get the full interpolated string
+        // This handles panic!("GraphQL error: {:?}", response.errors)
+        Some(format!("{}", args))
     } else {
         None
     }
@@ -205,7 +214,7 @@ pub fn init_global_test_logging() {
             let test_name = get_current_test();
             let payload = info.payload();
             if let Some(msg) = payload_downcast_str(payload) {
-                if let Some((enum_, message)) = extract_error_from_panic_msg(msg) {
+                if let Some((enum_, message)) = extract_error_from_panic_msg(&msg) {
                     if let Some(name) = test_name {
                         record_error(&name, enum_, message);
                     }
@@ -228,12 +237,15 @@ pub fn init_global_test_logging() {
                         .as_nanos();
                     
                     for (name, buffer) in buffers.drain() {
+                        let panicked = is_panic_flag_set();
+                        let status = if panicked { "fail" } else { "pass" };
+                        
                         let start_ts = now;
                         let end_ts = now + 1;
                         
                         let start_record = format!(
-                            r#"{{"event":"test.start","name":"{}","module":"","status":"pass","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
-                            name, name, start_ts
+                            r#"{{"event":"test.start","name":"{}","module":"","status":"{}","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
+                            name, status, name, start_ts
                         );
                         let _ = file.write_all(start_record.as_bytes());
                         let _ = file.write_all(b"\n");
@@ -241,8 +253,8 @@ pub fn init_global_test_logging() {
                         let _ = file.write_all(&buffer);
                         
                         let end_record = format!(
-                            r#"{{"event":"test.end","name":"{}","module":"","status":"pass","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
-                            name, name, end_ts
+                            r#"{{"event":"test.end","name":"{}","module":"","status":"{}","error":null,"error_enum":null,"error_message":null,"test.name":"{}","test.module":"","level":"INFO","timestamp":{}}}"#,
+                            name, status, name, end_ts
                         );
                         let _ = file.write_all(end_record.as_bytes());
                         let _ = file.write_all(b"\n");
@@ -421,6 +433,9 @@ impl tracing::field::Visit for EventVisitor {
                     self.timestamp = ns;
                 }
             }
+            "level" => {
+                self.level = format!("{:?}", value);
+            }
             _ => {
                 let debug_str = format!("{:?}", value);
                 self.fields.insert(field.name().to_string(), Self::parse_value(&debug_str));
@@ -443,7 +458,8 @@ fn serialize_event(event: &tracing::Event<'_>, span_fields: HashMap<String, Valu
         visitor.timestamp
     };
     
-    let level = visitor.level;
+    // Read level from event metadata (not from visitor — level is not a recorded field)
+    let level = event.metadata().level().as_str().to_string();
     let fields = visitor.fields;
     
     // Build JSON object using serde_json::Value
