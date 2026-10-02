@@ -21,7 +21,6 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
 
-/// Thread-local flag set by panic hook when a test panics.
 thread_local! {
     static PANIC_FLAG: AtomicBool = const { AtomicBool::new(false) };
 }
@@ -98,12 +97,10 @@ struct TestModuleStorage {
     module: Option<String>,
 }
 
-/// Thread-local storage for current test name (avoids global mutex race).
 thread_local! {
     static CURRENT_TEST: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Thread-local storage for per-test error info (avoids global mutex race).
 thread_local! {
     static ERROR_MAP: std::cell::RefCell<HashMap<String, (Option<String>, Option<String>)>> = std::cell::RefCell::new(HashMap::new());
 }
@@ -130,7 +127,7 @@ fn take_error(test_name: &str) -> (Option<String>, Option<String>) {
 
 /// Global state for the test logging subscriber.
 #[derive(Debug)]
-struct TestLogState {
+pub(crate) struct TestLogState {
     /// Path to the JSONL log file.
     log_file_path: String,
     /// The file handle (opened once, appended to).
@@ -210,7 +207,7 @@ pub fn init_global_test_logging() {
         set_panic_flag();
         
         // Capture error_enum and error_message from panic payload
-        if let Some(state) = STATE.get() {
+        if STATE.get().is_some() {
             let test_name = get_current_test();
             let payload = info.payload();
             if let Some(msg) = payload_downcast_str(payload) {
