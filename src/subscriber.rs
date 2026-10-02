@@ -607,29 +607,31 @@ impl TestGuard {
                 
                 // Write buffered events (if any)
                 if let Some(ref buffer) = buffer {
-                    if let (Some(ref enum_), Some(ref msg)) = (&error_enum, &error_message) {
-                        for line in buffer.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-                            if let Ok(line_str) = std::str::from_utf8(line) {
-                                if let Ok(mut value) = serde_json::from_str::<Value>(line_str) {
-                                    if let Some(obj) = value.as_object_mut() {
-                                        obj.insert("error_enum".into(), Value::String(enum_.clone()));
-                                        obj.insert("error_message".into(), Value::String(msg.clone()));
-                                    }
-                                    if let Some(json) = serde_json::to_string(&value).ok() {
-                                        let _ = file.write_all(json.as_bytes());
-                                        let _ = file.write_all(b"\n");
-                                    }
-                                } else {
-                                    let _ = file.write_all(line);
+                    for line in buffer.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+                        if let Ok(line_str) = std::str::from_utf8(line) {
+                            if let Ok(mut value) = serde_json::from_str::<Value>(line_str) {
+                                if let Some(obj) = value.as_object_mut() {
+                                    obj.insert("error_enum".into(), match &error_enum {
+                                        Some(s) => Value::String(s.clone()),
+                                        None => Value::Null,
+                                    });
+                                    obj.insert("error_message".into(), match &error_message {
+                                        Some(s) => Value::String(s.clone()),
+                                        None => Value::Null,
+                                    });
+                                }
+                                if let Some(json) = serde_json::to_string(&value).ok() {
+                                    let _ = file.write_all(json.as_bytes());
                                     let _ = file.write_all(b"\n");
                                 }
                             } else {
                                 let _ = file.write_all(line);
                                 let _ = file.write_all(b"\n");
                             }
+                        } else {
+                            let _ = file.write_all(line);
+                            let _ = file.write_all(b"\n");
                         }
-                    } else {
-                        let _ = file.write_all(buffer);
                     }
                 }
                 
