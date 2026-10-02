@@ -289,11 +289,7 @@ pub fn build_summary(results: Vec<TestResult>) -> serde_json::Value {
                 if let Some((cat, _)) = extract_error_type(err) {
                     // Only add if not already present via error_enum
                     if !errors_by_enum.contains_key(cat) {
-                        let count = errors_by_enum.iter().position(|(c, _)| c == cat);
-                        match count {
-                            Some(idx) => { /* already exists */ }
-                            None => { errors_by_enum.insert(cat.to_string(), Vec::new()); }
-                        }
+                        errors_by_enum.insert(cat.to_string(), Vec::new());
                     }
                 }
             }

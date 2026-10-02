@@ -68,7 +68,6 @@ fn pattern_panic_with_error_display() {
         message: "unique constraint violation: email".to_string(),
     };
     panic!("{}", err);
-    tracing::info!("never reached");
 }
 
 // --- Pattern 5: panic! with error enum Debug ---
@@ -80,7 +79,6 @@ fn pattern_panic_with_error_debug() {
         message: "duplicate @id value".to_string(),
     };
     panic!("{:?}", err);
-    tracing::info!("never reached");
 }
 
 // --- Pattern 6: tracing::error! (application error path) ---

@@ -205,49 +205,6 @@ fn run_instructions(input: PathBuf) {
     print_instructions(&results.iter().collect::<Vec<_>>());
 }
 
-fn print_summary(results: &[&models::TestResult]) {
-    let total = results.len();
-    let passed = results.iter().filter(|t| t.is_passed()).count();
-    let failed = total - passed;
-
-    println!("Test Results: {} total, {} passed, {} failed", total, passed, failed);
-    println!();
-
-    for test in results {
-        let status = if test.is_passed() {
-            "PASS"
-        } else if test.panicked {
-            "FAIL (panic)"
-        } else {
-            "FAIL"
-        };
-
-        let duration = test
-            .duration_ms
-            .map(|d| format!("{:.1}ms", d))
-            .unwrap_or_else(|| "N/A".to_string());
-
-        println!(
-            "  [{}] {} ({})",
-            status, test.name, duration
-        );
-
-        if !test.module.is_empty() {
-            println!("        {}", test.module);
-        }
-
-        if test.panicked {
-            if let Some(ref msg) = test.panic_message {
-                println!("        Panic: {}", msg);
-            }
-        }
-
-        if test.has_errors && !test.panicked {
-            println!("        Errors detected in log");
-        }
-    }
-}
-
 fn print_pretty(results: &[&models::TestResult]) {
     let output: Vec<_> = results
         .iter()

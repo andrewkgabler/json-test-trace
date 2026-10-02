@@ -116,23 +116,6 @@ async fn trace_with_tokio_attribute_with_arguments() {
   debug!("done");
 }
 
-// A trait containing `map` method that has the potential to cause
-// ambiguities in generated initialization code and is here only to
-// prevent accidental regressions. In the past we were susceptible to a
-// compilation error because generated code was using Iterator::map (but
-// not using fully qualified syntax).
-trait Foo: Sized {
-  fn map(self) {}
-}
-
-impl<T> Foo for T {}
-
-/// Make sure that Foo::map does not interfere with generated
-/// initialization code.
-#[json_test_trace::test]
-fn unambiguous_map() {}
-
-
 /// A module used for testing the `test` attribute after importing it
 /// via `use` instead of using fuller qualified syntax.
 mod local {

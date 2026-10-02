@@ -9,13 +9,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use uuid::Uuid;
-
-fn binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_json-test-trace"))
-}
 
 fn unique_temp_path(suffix: &str) -> String {
     let id = Uuid::new_v4().to_string();
