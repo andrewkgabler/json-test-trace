@@ -56,9 +56,6 @@ color = ["env_logger?/auto-color", "tracing-subscriber?/ansi"]
 # versioning guarantees.
 unstable = ["json-test-trace-macros/unstable"]
 
-[workspace]
-members = ["macros"]
-
 [dependencies]
 json-test-trace-macros = { version = "0.3", path = "macros" }
 tracing-subscriber = { version = "0.3.17", default-features = false, optional = true, features = [
