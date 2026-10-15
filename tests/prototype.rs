@@ -7,7 +7,7 @@
 //! ```
 
 
-#[test_trace::test]
+#[json_test_trace::test]
 fn it_works() {
   assert_eq!(2 + 2, 4);
 }

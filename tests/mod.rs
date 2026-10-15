@@ -18,41 +18,42 @@ mod something {
 use something::Error;
 
 
-#[test_trace::test]
+#[json_test_trace::test]
 fn without_return_type() {
   assert_eq!(2 + 2, 4);
 }
 
-#[test_trace::test]
+#[json_test_trace::test]
 fn with_return_type() -> Result<(), Error> {
-  Ok(())
+  let result: Result<(), Error> = Ok(());
+  result
 }
 
-#[test_trace::test]
+#[json_test_trace::test]
 #[should_panic(expected = "success")]
 fn with_panic() {
   panic!("success")
 }
 
-#[test_trace::test(tokio::test)]
+#[json_test_trace::test(tokio::test)]
 async fn with_inner_test_attribute_and_async() {
   assert_eq!(async { 42 }.await, 42)
 }
 
-#[test_trace::test(test_case::test_case(-2, -4))]
+#[json_test_trace::test(test_case::test_case(-2, -4))]
 fn with_inner_test_attribute_and_test_args(x: i8, y: i8) {
   assert_eq!(x, -2);
   assert_eq!(y, -4);
 }
 
-#[test_trace::test(test_case::test_case(-2, -4; "my test name"))]
+#[json_test_trace::test(test_case::test_case(-2, -4; "my test name"))]
 fn with_inner_test_attribute_and_test_args_and_name(x: i8, y: i8) {
   assert_eq!(x, -2);
   assert_eq!(y, -4);
 }
 
 #[should_panic]
-#[test_trace::test(test_case::test_case(-2, -4))]
+#[json_test_trace::test(test_case::test_case(-2, -4))]
 fn with_inner_test_attribute_and_test_args_and_panic(x: i8, _y: i8) {
   assert_eq!(x, 0);
 }
@@ -81,7 +82,7 @@ async fn instrumented(input: usize) -> usize {
 /// RUST_LOG=debug RUST_LOG_SPAN_EVENTS=full \
 ///   cargo test --features trace trace_with_custom_runtime -- --nocapture
 /// ```
-#[test_trace::test]
+#[json_test_trace::test]
 fn trace_with_custom_runtime() {
   let rt = Builder::new_current_thread().build().unwrap();
 
@@ -92,7 +93,7 @@ fn trace_with_custom_runtime() {
   })
 }
 
-#[test_trace::test(tokio::test)]
+#[json_test_trace::test(tokio::test)]
 async fn trace_with_tokio_attribute() {
   instrumented(6).await;
   instrumented(4).await;
@@ -100,45 +101,27 @@ async fn trace_with_tokio_attribute() {
 }
 
 #[cfg(feature = "unstable")]
-#[test_trace::test(tokio::test)]
-#[test_trace(default_log_filter = "info")]
+#[json_test_trace::test(tokio::test)]
+#[json_test_trace(default_log_filter = "info")]
 async fn trace_with_default_log_filter() {
   instrumented(6).await;
   instrumented(4).await;
   debug!("done");
 }
 
-#[test_trace::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
+#[json_test_trace::test(tokio::test(flavor = "multi_thread", worker_threads = 1))]
 async fn trace_with_tokio_attribute_with_arguments() {
   instrumented(6).await;
   instrumented(4).await;
   debug!("done");
 }
 
-// A trait containing `map` method that has the potential to cause
-// ambiguities in generated initialization code and is here only to
-// prevent accidental regressions. In the past we were susceptible to a
-// compilation error because generated code was using Iterator::map (but
-// not using fully qualified syntax).
-#[allow(dead_code)]
-trait Foo: Sized {
-  fn map(self) {}
-}
-
-impl<T> Foo for T {}
-
-/// Make sure that Foo::map does not interfere with generated
-/// initialization code.
-#[test_trace::test]
-fn unambiguous_map() {}
-
-
 /// A module used for testing the `test` attribute after importing it
 /// via `use` instead of using fuller qualified syntax.
 mod local {
   use super::Error;
 
-  use test_trace::test;
+  use json_test_trace::test;
 
   #[test]
   fn without_return_type() {
@@ -147,7 +130,8 @@ mod local {
 
   #[test]
   fn with_return_type() -> Result<(), Error> {
-    Ok(())
+    let result: Result<(), Error> = Ok(());
+    result
   }
 
   #[test]

@@ -6,6 +6,32 @@
 //! A crate providing a replacement #[[macro@test]] attribute that
 //! initializes logging and/or tracing infrastructure before running
 //! tests.
+//!
+//! When the `trace` feature is enabled, test output is written to a
+//! JSONL file (path from `TEST_LOG_FILE` env var, default:
+//! `/tmp/{crate_name}-tracing.jsonl`). Each test's events are
+//! accumulated in a per-test buffer and flushed atomically as a
+//! contiguous block on test completion (normal exit or panic).
+
+#[cfg(feature = "trace")]
+mod subscriber;
+
+#[cfg(feature = "trace")]
+pub use subscriber::{init_global_test_logging, init_test, TestGuard, get_log_file_path};
+
+#[cfg(feature = "trace")]
+#[ctor::ctor]
+fn __json_test_trace_ctor() {
+    init_global_test_logging();
+}
+
+#[cfg(feature = "trace")]
+#[dtor::dtor]
+fn __json_test_trace_dtor() {
+    if let Some(path) = get_log_file_path() {
+        eprintln!("json-test-trace: test logs written to {}", path);
+    }
+}
 
 /// A procedural macro for the `test` attribute.
 ///
@@ -24,7 +50,7 @@
 /// # use logging::info;
 /// # // Note that no test would actually run, regardless of `no_run`,
 /// # // because we do not invoke the function.
-/// #[test_trace::test]
+/// #[json_test_trace::test]
 /// fn it_works() {
 ///   info!("Checking whether it still works...");
 ///   assert_eq!(2 + 2, 4);
@@ -37,7 +63,7 @@
 /// the `#[test]` attribute on a per-module basis:
 /// ```rust,no_run
 /// # mod fordoctest {
-/// use test_trace::test;
+/// use json_test_trace::test;
 ///
 /// #[test]
 /// fn it_still_works() {
@@ -51,7 +77,7 @@
 /// to run async tests:
 /// ```
 /// # mod fordoctest {
-/// use test_trace::test;
+/// use json_test_trace::test;
 ///
 /// #[test(tokio::test)]
 /// async fn it_still_works() {
@@ -59,11 +85,31 @@
 /// }
 /// # }
 /// ```
-pub use test_trace_macros::test;
+pub use json_test_trace_macros::test;
+
+/// A procedural macro for the `ignore` attribute.
+///
+/// Replaces `#[ignore]` with a test that emits a `test.ignored` event
+/// without running the test body. The test appears as passed in cargo
+/// test output but is reported as ignored in the JSON log.
+///
+/// # Example
+/// ```rust,no_run
+/// # mod fordoctest {
+/// #[json_test_trace::ignore]
+/// fn not_implemented_yet() {
+///   // body is never executed
+/// }
+/// # }
+/// ```
+pub use json_test_trace_macros::ignore;
 
 #[cfg(feature = "trace")]
 #[doc(hidden)]
 pub use tracing_subscriber;
+
+#[cfg(feature = "trace")]
+pub use tracing;
 
 #[cfg(feature = "log")]
 #[doc(hidden)]

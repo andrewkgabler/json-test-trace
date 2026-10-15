@@ -10,8 +10,8 @@ use logging::Level;
 
 
 #[ignore = "interferes with RUST_LOG; disabled by default"]
-#[test_trace::test(tokio::test)]
-#[test_trace(default_log_filter = "debug")]
+#[json_test_trace::test(tokio::test)]
+#[json_test_trace(default_log_filter = "debug")]
 async fn with_inner_test_attribute_and_default_log_filter_defined() {
   // Check that RUST_LOG isn't set, because that could affect the
   // outcome of this test since we're checking that we fallback to

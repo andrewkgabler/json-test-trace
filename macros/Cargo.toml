@@ -1,5 +1,5 @@
 [package]
-name = "test-trace-macros"
+name = "json-test-trace-macros"
 version = "0.3.0"
 authors = [
     "Luke Curley <kixelated@gmail.com>",
@@ -8,9 +8,9 @@ authors = [
 edition = "2021"
 rust-version = "1.71"
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/kixelated/test-trace.git"
+repository = "https://github.com/andrewkgabler/json-test-trace.git"
 description = """
-Supporting procedural macro crate for test-trace.
+Supporting procedural macro crate for json-test-trace.
 """
 
 [lib]

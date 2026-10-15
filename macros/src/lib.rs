@@ -25,6 +25,55 @@ pub fn test(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+#[proc_macro_attribute]
+pub fn ignore(_attr: TokenStream, item: TokenStream) -> TokenStream {
+  let item = parse_macro_input!(item as ItemFn);
+  try_ignore(item)
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
+fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
+  let ItemFn {
+    attrs,
+    vis,
+    sig,
+    block: _,
+  } = input;
+
+  let attribute_args = AttributeArgs::default();
+  let logging_init = expand_logging_init(&attribute_args);
+  let tracing_init = expand_tracing_init(&attribute_args);
+  let test_name = &sig.ident;
+  let test_name_str = test_name.to_string();
+
+  let result = quote! {
+    #[::core::prelude::v1::test]
+    #(#attrs)*
+    #vis #sig {
+      mod init {
+        pub fn init() {
+          #logging_init
+          #tracing_init
+        }
+      }
+
+      init::init();
+
+      // Initialize global subscriber (idempotent) and create flush guard
+      let __flush_guard = ::json_test_trace::init_test(#test_name_str, module_path!());
+      
+      let __span = ::json_test_trace::tracing::info_span!("test", test.name = #test_name_str, test.module = module_path!());
+      let __guard = __span.enter();
+      
+      tracing::info!(test.name = #test_name_str, test.module = module_path!(), "test.ignored");
+      
+      drop(__guard);
+    }
+  };
+  Ok(result)
+}
+
 fn parse_attrs(attrs: Vec<Attribute>) -> syn::Result<(AttributeArgs, Vec<Attribute>)> {
   let mut attribute_args = AttributeArgs::default();
   if cfg!(feature = "unstable") {
@@ -60,21 +109,13 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
   let (attribute_args, ignored_attrs) = parse_attrs(attrs)?;
   let logging_init = expand_logging_init(&attribute_args);
   let tracing_init = expand_tracing_init(&attribute_args);
+  let test_name = &sig.ident;
+  let test_name_str = test_name.to_string();
 
   let result = quote! {
     #[#inner_test]
     #(#ignored_attrs)*
     #vis #sig {
-      // We put all initialization code into a separate module here in
-      // order to prevent potential ambiguities that could result in
-      // compilation errors. E.g., client code could use traits that
-      // could have methods that interfere with ones we use as part of
-      // initialization; with a `Foo` trait that is implemented for T
-      // and that contains a `map` (or similarly common named) method
-      // that could cause an ambiguity with `Iterator::map`, for
-      // example.
-      // The alternative would be to use fully qualified call syntax in
-      // all initialization code, but that's much harder to control.
       mod init {
         pub fn init() {
           #logging_init
@@ -84,7 +125,19 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       init::init();
 
-      #block
+      // Initialize global subscriber (idempotent) and create flush guard
+      let __flush_guard = ::json_test_trace::init_test(#test_name_str, module_path!());
+      
+      let __span = ::json_test_trace::tracing::info_span!("test", test.name = #test_name_str, test.module = module_path!());
+      let __guard = __span.enter();
+      
+      let __result = {
+        #block
+      };
+
+      drop(__guard);
+
+      __result
     }
   };
   Ok(result)
@@ -157,7 +210,7 @@ fn expand_logging_init(attribute_args: &AttributeArgs) -> Tokens {
   {
     quote! {
       let env_logger_builder = env_logger_builder
-        .parse_env(::test_trace::env_logger::Env::default().default_filter_or(#default_log_filter));
+        .parse_env(::json_test_trace::env_logger::Env::default().default_filter_or(#default_log_filter));
     }
   } else {
     quote! {}
@@ -165,7 +218,7 @@ fn expand_logging_init(attribute_args: &AttributeArgs) -> Tokens {
 
   quote! {
     {
-      let mut env_logger_builder = ::test_trace::env_logger::builder();
+      let mut env_logger_builder = ::json_test_trace::env_logger::builder();
       #add_default_log_filter
       let _ = env_logger_builder.is_test(true).try_init();
     }
@@ -179,61 +232,10 @@ fn expand_logging_init(_attribute_args: &AttributeArgs) -> Tokens {
 
 /// Expand the initialization code for the `tracing` crate.
 #[cfg(feature = "trace")]
-fn expand_tracing_init(attribute_args: &AttributeArgs) -> Tokens {
-  let env_filter = if let Some(default_log_filter) = &attribute_args.default_log_filter {
-    quote! {
-      ::test_trace::tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(
-          #default_log_filter
-            .parse()
-            .expect("test-trace: default_log_filter must be valid")
-        )
-        .from_env_lossy()
-    }
-  } else {
-    quote! {
-    ::test_trace::tracing_subscriber::EnvFilter::builder()
-      .with_default_directive(
-        ::test_trace::tracing_subscriber::filter::LevelFilter::TRACE.into()
-      ).from_env_lossy()
-    }
-  };
-
+fn expand_tracing_init(_attribute_args: &AttributeArgs) -> Tokens {
   quote! {
-    {
-      let __internal_event_filter = {
-        use ::test_trace::tracing_subscriber::fmt::format::FmtSpan;
-
-        match ::std::env::var_os("RUST_LOG_SPAN_EVENTS") {
-          Some(mut value) => {
-            value.make_ascii_lowercase();
-            let value = value.to_str().expect("test-trace: RUST_LOG_SPAN_EVENTS must be valid UTF-8");
-            value
-              .split(",")
-              .map(|filter| match filter.trim() {
-                "new" => FmtSpan::NEW,
-                "enter" => FmtSpan::ENTER,
-                "exit" => FmtSpan::EXIT,
-                "close" => FmtSpan::CLOSE,
-                "active" => FmtSpan::ACTIVE,
-                "full" => FmtSpan::FULL,
-                _ => panic!("test-trace: RUST_LOG_SPAN_EVENTS must contain filters separated by `,`.\n\t\
-                  For example: `active` or `new,close`\n\t\
-                  Supported filters: new, enter, exit, close, active, full\n\t\
-                  Got: {}", value),
-              })
-              .fold(FmtSpan::NONE, |acc, filter| filter | acc)
-          },
-          None => FmtSpan::NONE,
-        }
-      };
-
-      let _ = ::test_trace::tracing_subscriber::FmtSubscriber::builder()
-        .with_env_filter(#env_filter)
-        .with_span_events(__internal_event_filter)
-        .with_test_writer()
-        .try_init();
-    }
+    // Global subscriber is already initialized by init_global_test_logging()
+    // No per-test subscriber setup needed
   }
 }
 
