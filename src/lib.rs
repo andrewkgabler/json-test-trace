@@ -17,20 +17,26 @@
 mod subscriber;
 
 #[cfg(feature = "trace")]
-pub use subscriber::{init_global_test_logging, init_test, TestGuard, get_log_file_path};
+pub use subscriber::get_log_file_path;
+#[cfg(feature = "trace")]
+pub use subscriber::init_global_test_logging;
+#[cfg(feature = "trace")]
+pub use subscriber::init_test;
+#[cfg(feature = "trace")]
+pub use subscriber::TestGuard;
 
 #[cfg(feature = "trace")]
 #[ctor::ctor]
 fn __json_test_trace_ctor() {
-    init_global_test_logging();
+  init_global_test_logging();
 }
 
 #[cfg(feature = "trace")]
 #[dtor::dtor]
 fn __json_test_trace_dtor() {
-    if let Some(path) = get_log_file_path() {
-        eprintln!("json-test-trace: test logs written to {}", path);
-    }
+  if let Some(path) = get_log_file_path() {
+    eprintln!("json-test-trace: test logs written to {}", path);
+  }
 }
 
 /// A procedural macro for the `test` attribute.

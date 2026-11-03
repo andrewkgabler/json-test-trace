@@ -62,12 +62,12 @@ fn try_ignore(input: ItemFn) -> syn::Result<Tokens> {
 
       // Initialize global subscriber (idempotent) and create flush guard
       let __flush_guard = ::json_test_trace::init_test(#test_name_str, module_path!());
-      
+
       let __span = ::json_test_trace::tracing::info_span!("test", test.name = #test_name_str, test.module = module_path!());
       let __guard = __span.enter();
-      
+
       tracing::info!(test.name = #test_name_str, test.module = module_path!(), "test.ignored");
-      
+
       drop(__guard);
     }
   };
@@ -127,10 +127,10 @@ fn try_test(attr: TokenStream, input: ItemFn) -> syn::Result<Tokens> {
 
       // Initialize global subscriber (idempotent) and create flush guard
       let __flush_guard = ::json_test_trace::init_test(#test_name_str, module_path!());
-      
+
       let __span = ::json_test_trace::tracing::info_span!("test", test.name = #test_name_str, test.module = module_path!());
       let __guard = __span.enter();
-      
+
       let __result = {
         #block
       };
